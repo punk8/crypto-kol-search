@@ -1,0 +1,15 @@
+{% if request.headers.get("HX-Request") %}<div id="run-panel" {% if run.status in ["queued", "running"] %}hx-get="/runs/{{ run.id }}?account_type={{ account_type }}" hx-trigger="every 2s" hx-target="#run-panel" hx-swap="outerHTML"{% endif %}>{% endif %}
+<section class="run-head">
+  <div><p class="eyebrow">RUN #{{ run.id }}</p><h1>{{ run.query }}</h1><p>{{ run.backend }} · {{ run.kind }} · {{ run.language }} · Top {{ run.result_limit }}</p></div>
+  <div class="run-actions"><a class="button ghost" href="/exports/{{ run.id }}.csv">CSV</a><a class="button ghost" href="/exports/{{ run.id }}.json">JSON</a>{% if run.status in ["failed", "interrupted"] %}<form action="/runs/{{ run.id }}/retry" method="post"><button>重试</button></form>{% endif %}</div>
+</section>
+<section class="card progress-card"><div class="progress-row"><span class="status {{ run.status }}">{{ run.status }}</span><strong>{{ run.progress }}%</strong><span>{{ run.phase }}</span></div><div class="progress"><i style="width:{{ run.progress }}%"></i></div>
+{% if run.error %}<p class="error">{{ run.error }}</p>{% endif %}
+<div class="stats">{% for key, value in run.stats.items() %}<span><b>{{ value }}</b>{{ key }}</span>{% endfor %}</div>
+{% if run.warnings %}<details><summary>{{ run.warnings|length }} 条告警</summary><ul>{% for warning in run.warnings[:30] %}<li>{{ warning }}</li>{% endfor %}</ul></details>{% endif %}</section>
+
+<div class="tabs"><a class="{% if account_type == 'person' %}active{% endif %}" href="/runs/{{ run.id }}?account_type=person">个人 KOL</a><a class="{% if account_type == 'organization' %}active{% endif %}" href="/runs/{{ run.id }}?account_type=organization">机构账号</a><a class="{% if account_type == 'all' %}active{% endif %}" href="/runs/{{ run.id }}?account_type=all">全部</a></div>
+<div class="table-wrap"><table><thead><tr><th>排名</th><th>账号</th><th>类型</th><th>粉丝</th><th>相关度</th><th>总分</th><th>联系方式</th></tr></thead><tbody>
+{% for item in results %}<tr><td>#{{ item.rank or "-" }}</td><td><a href="/accounts/{{ item.account_id }}"><strong>{{ item.name or item.username }}</strong><small>@{{ item.username }}</small></a></td><td>{{ item.account_type }}</td><td>{{ "{:,}".format(item.followers_count) }}</td><td>{{ "%.3f"|format(item.domain_score) }}</td><td>{{ "%.3f"|format(item.score_total) }}</td><td>{{ item.contact_count }}</td></tr>
+{% else %}<tr><td colspan="7" class="empty">{% if run.status in ["queued", "running"] %}任务运行中，结果将在这里出现{% else %}没有符合筛选条件的账号{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+{% if request.headers.get("HX-Request") %}</div>{% endif %}

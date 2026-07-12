@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Crypto KOL Search{% endblock %}</title>
+  <link rel="icon" href="/static/avatar.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script defer src="/static/htmx-lite.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Crypto KOL Search</a>
+    <nav><a href="/">任务</a><a href="/library">KOL 总库</a></nav>
+  </header>
+  <main class="container">{% block content %}{% endblock %}</main>
+</body>
+</html>

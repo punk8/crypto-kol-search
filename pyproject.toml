@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kol-search"
+version = "0.1.0"
+description = "Autonomous crypto KOL discovery on Twitter/X (research MVP)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "kol-search research" }]
+dependencies = [
+  "apscheduler>=3.10,<4",
+  "beautifulsoup4>=4.12",
+  "fastapi>=0.115",
+  "httpx[socks]>=0.27",
+  "jinja2>=3.1",
+  "pydantic>=2.6",
+  "pydantic-settings>=2.2",
+  "python-multipart>=0.0.9",
+  "PyYAML>=6.0",
+  "typer>=0.12",
+  "python-dotenv>=1.0",
+  "rich>=13.7",
+  "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+ai = ["openai>=1.66"]
+twscrape = ["twscrape>=0.13"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+
+[project.scripts]
+kol-search = "kol_search.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kol_search = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

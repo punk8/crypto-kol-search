@@ -1,0 +1,28 @@
+# Local secrets and runtime state
+.env
+.env.*
+!.env.example
+data/*.db
+data/*.db-*
+output/
+.opencli/
+
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+dist/
+build/
+*.egg
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/

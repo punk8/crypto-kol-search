@@ -1,0 +1,162 @@
+[
+  {
+    "id": "1",
+    "username": "VitalikButerin",
+    "name": "vitalik.eth",
+    "description": "Ethereum co-founder. Research on crypto, scaling, and public goods. Research contact: vitalik@example.org",
+    "followers_count": 5500000,
+    "following_count": 300,
+    "tweet_count": 12000,
+    "verified": true
+  },
+  {
+    "id": "2",
+    "username": "CoinDesk",
+    "name": "CoinDesk",
+    "description": "Leading crypto media. Bitcoin, Ethereum, markets, regulation.",
+    "followers_count": 3200000,
+    "following_count": 800,
+    "tweet_count": 180000,
+    "verified": true
+  },
+  {
+    "id": "3",
+    "username": "lookonchain",
+    "name": "Lookonchain",
+    "description": "On-chain analytics. Whale alerts, smart money, crypto flows.",
+    "followers_count": 890000,
+    "following_count": 120,
+    "tweet_count": 25000,
+    "verified": true
+  },
+  {
+    "id": "4",
+    "username": "CryptoKaleo",
+    "name": "Kaleo",
+    "description": "Crypto trader. Charts, market structure, bitcoin & alts.",
+    "followers_count": 1100000,
+    "following_count": 500,
+    "tweet_count": 45000,
+    "verified": true
+  },
+  {
+    "id": "5",
+    "username": "MessariCrypto",
+    "name": "Messari",
+    "description": "Crypto research and market intelligence. Protocol analysis.",
+    "followers_count": 450000,
+    "following_count": 400,
+    "tweet_count": 30000,
+    "verified": true
+  },
+  {
+    "id": "10",
+    "username": "alpha_defi_researcher",
+    "name": "DeFi Alpha",
+    "description": "Independent DeFi researcher. TVL, yields, new protocols. Partnerships: defi.alpha@example.org",
+    "followers_count": 82000,
+    "following_count": 900,
+    "tweet_count": 4100,
+    "verified": false
+  },
+  {
+    "id": "11",
+    "username": "solana_builder_x",
+    "name": "Sol Builder",
+    "description": "Building on Solana. Memecoins, DePIN, and on-chain culture. Business: sol.builder@example.org",
+    "followers_count": 156000,
+    "following_count": 600,
+    "tweet_count": 8900,
+    "verified": false
+  },
+  {
+    "id": "12",
+    "username": "btc_macro_notes",
+    "name": "BTC Macro",
+    "description": "Bitcoin macro & liquidity cycles. Not financial advice.",
+    "followers_count": 210000,
+    "following_count": 350,
+    "tweet_count": 12000,
+    "verified": true
+  },
+  {
+    "id": "13",
+    "username": "l2_scaling_watch",
+    "name": "L2 Watch",
+    "description": "Layer 2 and Ethereum scaling news. Rollups, zk, blob data.",
+    "followers_count": 67000,
+    "following_count": 400,
+    "tweet_count": 5200,
+    "verified": false
+  },
+  {
+    "id": "14",
+    "username": "random_foodie",
+    "name": "Food Blog",
+    "description": "Best dumplings in town. Recipes and restaurant reviews.",
+    "followers_count": 50000,
+    "following_count": 200,
+    "tweet_count": 3000,
+    "verified": false
+  },
+  {
+    "id": "15",
+    "username": "nft_curator_dao",
+    "name": "NFT Curator",
+    "description": "NFT art curator. Web3 culture, digital collectibles, crypto art.",
+    "followers_count": 94000,
+    "following_count": 1100,
+    "tweet_count": 7000,
+    "verified": false
+  },
+  {
+    "id": "16",
+    "username": "onchain_detective",
+    "name": "Onchain Detective",
+    "description": "Tracing hacks, exploits, and suspicious crypto wallet flows.",
+    "followers_count": 185000,
+    "following_count": 220,
+    "tweet_count": 9800,
+    "verified": true
+  },
+  {
+    "id": "17",
+    "username": "airdrop_farmer_pro",
+    "name": "Airdrop Pro",
+    "description": "Airdrop guides, testnets, and early crypto protocol farming.",
+    "followers_count": 43000,
+    "following_count": 1500,
+    "tweet_count": 6000,
+    "verified": false
+  },
+  {
+    "id": "18",
+    "username": "eth_research_notes",
+    "name": "ETH Research Notes",
+    "description": "Notes on Ethereum research, PBS, MEV, and protocol upgrades.",
+    "followers_count": 72000,
+    "following_count": 180,
+    "tweet_count": 2100,
+    "verified": false
+  },
+  {
+    "id": "19",
+    "username": "meme_coin_radar",
+    "name": "Meme Coin Radar",
+    "description": "Tracking memecoin narratives on Solana and Base. High risk.",
+    "followers_count": 128000,
+    "following_count": 700,
+    "tweet_count": 15000,
+    "verified": false
+  },
+  {
+    "id": "20",
+    "username": "reg_crypto_policy",
+    "name": "Crypto Policy Watch",
+    "description": "Crypto regulation, SEC cases, MiCA, and policy analysis.",
+    "followers_count": 56000,
+    "following_count": 300,
+    "tweet_count": 4000,
+    "verified": false
+  }
+]
