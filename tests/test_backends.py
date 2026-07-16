@@ -34,12 +34,27 @@ def test_official_parser_preserves_entities_and_metrics():
         "id": "p1",
         "author_id": "1",
         "text": "hello @bob",
+        "conversation_id": "c1",
+        "in_reply_to_user_id": "2",
+        "referenced_tweets": [{"type": "replied_to", "id": "p0"}],
         "entities": {"mentions": [{"username": "bob"}]},
-        "public_metrics": {"like_count": 2, "retweet_count": 3},
+        "public_metrics": {
+            "like_count": 2,
+            "retweet_count": 3,
+            "impression_count": 100,
+            "bookmark_count": 4,
+        },
     }, {"1": account})
     assert post.author_username == "alice"
     assert post.mentioned_usernames == ["bob"]
     assert post.engagement == 5
+    assert post.url == "https://x.com/alice/status/p1"
+    assert post.conversation_id == "c1"
+    assert post.in_reply_to_user_id == "2"
+    assert post.referenced_post_id == "p0"
+    assert post.reference_type == "replied_to"
+    assert post.view_count == 100
+    assert post.bookmark_count == 4
 
 
 def test_third_party_user_search_is_explicit_capability():
@@ -112,6 +127,8 @@ def test_twitterapi_io_normalizes_users_posts_and_pagination():
                     "retweetCount": 3,
                     "replyCount": 2,
                     "quoteCount": 1,
+                    "viewCount": 200,
+                    "conversationId": "conversation-1",
                     "author": {"id": "1", "userName": "alice"},
                     "entities": {"user_mentions": [{"screen_name": "bob"}]},
                 }],
@@ -171,6 +188,9 @@ def test_twitterapi_io_normalizes_users_posts_and_pagination():
     assert posts[0].engagement == 11
     assert posts[0].lang == "en"
     assert posts[0].mentioned_usernames == ["bob"]
+    assert posts[0].url == "https://x.com/alice/status/t1"
+    assert posts[0].conversation_id == "conversation-1"
+    assert posts[0].view_count == 200
     assert timeline[0].author_username == "alice"
     assert timeline[0].like_count == 2
     assert followings[0].username == "carol"
@@ -223,28 +243,31 @@ def test_opencli_backend_maps_read_only_commands():
 
     def runner(command, **kwargs):
         calls.append(command)
-        operation = command[4]
+        operation = command[2]
         if operation == "search":
             payload = [{
                 "id": "t1", "author": "alice", "bio": "DeFi researcher",
                 "text": "hello @bob", "likes": 7, "views": 100,
-                "created_at": "2026-07-01T00:00:00Z",
+                "created_at": "Wed Jul 01 00:00:00 +0000 2026",
             }]
         elif operation == "profile":
             payload = [{
-                "screen_name": command[5], "name": "Alice", "bio": "DeFi researcher",
+                "screen_name": "alice",
+                "name": "Alice", "bio": "DeFi researcher",
                 "followers": 1234, "following": 50, "tweets": 99,
                 "verified": True, "url": "https://alice.example",
             }]
         elif operation == "tweets":
             payload = [{
-                "id": "t2", "author": command[5], "text": "latest",
+                "id": "t2", "author": "alice", "text": "latest",
                 "likes": 3, "retweets": 2, "replies": 1,
             }]
         elif operation == "following":
             payload = [{
                 "screen_name": "carol", "name": "Carol", "bio": "Onchain", "followers": 50
             }]
+        elif operation == "trending":
+            payload = [{"name": "DeFi", "rank": 1, "post_count": 12000}]
         else:
             raise AssertionError(operation)
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
@@ -259,13 +282,22 @@ def test_opencli_backend_maps_read_only_commands():
     account = client.get_user_by_username("alice")
     timeline = client.get_user_tweets("1", max_results=1, username="alice")
     followings = client.get_followings("alice", max_results=1)
+    trends = client.get_trends(max_results=1)
 
     assert posts[0].author_id == "1"
+    assert posts[0].created_at == "2026-07-01T00:00:00+00:00"
     assert posts[0].mentioned_usernames == ["bob"]
     assert account and account.id == "1" and account.followers_count == 1234
     assert timeline[0].engagement == 6
     assert followings[0].id == "opencli:carol"
-    assert all("--profile" in command and "ddd" in command for command in calls)
+    assert trends[0].name == "DeFi"
+    assert all("--profile" not in command for command in calls)
+    assert calls[0][1:7] == [
+        "twitter", "search", "defi", "--product", "live", "--limit"
+    ]
+    assert ["profile", "alice"] == calls[1][2:4]
+    assert ["tweets", "alice", "--limit", "1"] == calls[2][2:6]
+    assert ["following", "alice"] == calls[3][2:4]
 
 
 def test_failover_is_sticky_and_preserves_diagnostics():

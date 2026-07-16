@@ -36,8 +36,18 @@ def _parse_tweet(t: Any) -> Post:
         un = getattr(m, "username", None) or (m if isinstance(m, str) else None)
         if un:
             mentions.append(str(un).lstrip("@"))
+    post_id = str(getattr(t, "id", "") or getattr(t, "id_str", "") or "")
+    reply_to_id = getattr(t, "inReplyToTweetId", None) or getattr(t, "in_reply_to_status_id", None)
+    reply_to_user = getattr(t, "inReplyToUser", None)
+    reply_to_username = (
+        getattr(reply_to_user, "username", None)
+        or getattr(reply_to_user, "screen_name", None)
+        or (reply_to_user if isinstance(reply_to_user, str) else None)
+    )
+    quoted = getattr(t, "quotedTweet", None)
+    quoted_id = getattr(quoted, "id", None) if quoted is not None else None
     return Post(
-        id=str(getattr(t, "id", "") or getattr(t, "id_str", "") or ""),
+        id=post_id,
         author_id=author_id,
         author_username=str(author_username).lstrip("@") if author_username else None,
         text=str(getattr(t, "rawContent", None) or getattr(t, "text", None) or ""),
@@ -46,6 +56,23 @@ def _parse_tweet(t: Any) -> Post:
         retweet_count=int(getattr(t, "retweetCount", 0) or getattr(t, "retweet_count", 0) or 0),
         reply_count=int(getattr(t, "replyCount", 0) or getattr(t, "reply_count", 0) or 0),
         quote_count=int(getattr(t, "quoteCount", 0) or 0),
+        view_count=int(getattr(t, "viewCount", 0) or getattr(t, "views", 0) or 0),
+        bookmark_count=int(getattr(t, "bookmarkCount", 0) or 0),
+        url=(
+            getattr(t, "url", None)
+            or (f"https://x.com/{author_username}/status/{post_id}" if author_username and post_id else None)
+        ),
+        conversation_id=str(getattr(t, "conversationId", None) or post_id),
+        in_reply_to_user_id=(
+            str(getattr(t, "inReplyToUserId", None))
+            if getattr(t, "inReplyToUserId", None)
+            else None
+        ),
+        in_reply_to_username=(
+            str(reply_to_username).lstrip("@") if reply_to_username else None
+        ),
+        referenced_post_id=str(reply_to_id or quoted_id) if reply_to_id or quoted_id else None,
+        reference_type="replied_to" if reply_to_id else ("quoted" if quoted_id else None),
         mentioned_usernames=mentions,
         raw={},
     )
@@ -167,7 +194,12 @@ class TwscrapeTwitterClient:
         return out
 
     def get_user_tweets(
-        self, user_id: str, max_results: int = 10, *, username: str | None = None
+        self,
+        user_id: str,
+        max_results: int = 10,
+        *,
+        username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         async def _inner() -> list[Post]:
             await self._ensure_ready()

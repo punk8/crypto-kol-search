@@ -33,7 +33,6 @@ kol-search web
 
 ```bash
 OPENCLI_COMMAND=opencli
-OPENCLI_PROFILE=ddd
 OPENCLI_TIMEOUT_SECONDS=90
 TWITTER_FALLBACK_BACKEND=opencli
 ```
@@ -46,7 +45,23 @@ TWITTER_FALLBACK_BACKEND=opencli
 kol-search discover "DeFi researcher" --backend opencli --limit 30
 ```
 
-OpenCLI 要求对应 Chrome 用户资料已经安装 Browser Bridge、登录 X，并保持至少一个窗口打开。使用 `opencli profile list` 和 `opencli --profile ddd twitter whoami` 检查状态。浏览器关闭后，定时任务无法使用该后端或 fallback。
+项目按 OpenCLI 1.8.6 的命令接口集成，并使用当前激活的 Browser Bridge profile。Chrome 需要安装并连接 Browser Bridge、登录 X，并保持至少一个窗口打开。使用 `opencli doctor` 检查连接状态，再用 `opencli twitter search bitcoin --product live --limit 1 -f json` 做只读验证。浏览器关闭后，定时任务无法使用该后端或 fallback。
+
+## 人物雷达与趋势雷达
+
+后台提供两个面向执行的工作台：
+
+- `/radar/people`：从 approved KOL 时间线和主题搜索中生成回复机会、可编辑草稿与 24 小时处理窗口。
+- `/radar/topics`：按讨论增速、规模、独立作者和重点 KOL 参与生成热搜选题与单条 X 帖提纲。
+
+先在 `/settings/brand` 填写品牌名称、X handle、定位、语气和禁用表达，再到人物雷达手动运行一次信号扫描。系统不会自动发送回复或发布内容。OpenCLI Browser Bridge 就绪后，待处理项会显示“通过 OpenCLI 回复”；只有人工确认点击才会发送。发送后系统会读取品牌账号时间线确认真实回复链接，无法确认时进入“待确认”而不会自动重试。回填或确认实际回复链接后，启用自动信号扫描可在 1、6、24 小时复查互动和原作者回应。
+
+自动扫描默认关闭。确认真实后端可用后，在 `.env` 设置：
+
+```bash
+KOL_ENABLE_SIGNAL_SCAN=true
+KOL_SIGNAL_INTERVAL_MINUTES=30
+```
 
 ## 初始种子库
 

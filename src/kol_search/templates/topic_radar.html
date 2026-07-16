@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}趋势雷达 · Crypto KOL Search{% endblock %}
+{% block content %}
+<section class="workspace-head">
+  <div><p class="eyebrow">TOPIC RADAR</p><h1>热搜选题</h1><p>结合讨论增速、规模、独立作者和头部 KOL 参与，生成可编辑的单条 X 帖提纲。</p></div>
+  <a class="button ghost" href="/radar/people">查看人物雷达</a>
+</section>
+{% if not brand.brand_name %}<div class="notice warning">选题草稿当前使用通用品牌语气。<a href="/settings/brand">完成品牌配置</a></div>{% endif %}
+<form method="get" class="compact-filters">
+  <select name="status"><option value="pending" {% if status=='pending' %}selected{% endif %}>待评估</option><option value="adopted" {% if status=='adopted' %}selected{% endif %}>已采用</option><option value="published" {% if status=='published' %}selected{% endif %}>已发布</option><option value="skipped" {% if status=='skipped' %}selected{% endif %}>已跳过</option><option value="all" {% if status=='all' %}selected{% endif %}>全部</option></select>
+  <select name="lifecycle"><option value="all">全部阶段</option><option value="emerging" {% if lifecycle=='emerging' %}selected{% endif %}>萌芽</option><option value="rising" {% if lifecycle=='rising' %}selected{% endif %}>升温</option><option value="breakout" {% if lifecycle=='breakout' %}selected{% endif %}>爆发</option><option value="declining" {% if lifecycle=='declining' %}selected{% endif %}>衰退</option></select>
+  <button class="ghost">筛选</button>
+</form>
+<section class="radar-list">
+{% for item in clusters %}
+  <article class="radar-item topic-item">
+    <div class="radar-rank"><strong>{{ "%.0f"|format(item.heat_score) }}</strong><span>热度</span></div>
+    <div class="radar-body">
+      <div class="radar-title"><div><h2>{{ item.title }}</h2><span>{{ item.lifecycle }} · {{ item.language }}{% if item.native_trend %} · X Trending{% endif %}</span></div><span class="status {{ item.editorial_status }}">{{ item.editorial_status }}</span></div>
+      <p>{{ item.summary }}</p>
+      <div class="metric-line"><span>{{ item.metrics.post_count }} 条帖子</span><span>{{ item.metrics.unique_authors }} 位作者</span><span>{{ item.metrics.kol_count }} 位重点 KOL</span><span>{{ item.metrics.engagement_total }} 次互动</span><span>6h {{ item.metrics.growth_6h }}x</span></div>
+      <form action="/topic-clusters/{{ item.id }}" method="post" class="editor-form">
+        <label>选题提纲<textarea name="outline" rows="4">{{ item.outline }}</textarea></label>
+        <label>单条 X 帖草稿<textarea name="draft" rows="4">{{ item.draft }}</textarea></label>
+        <label>发布链接<input name="published_url" value="{{ item.published_url or '' }}" placeholder="https://x.com/your_brand/status/..."></label>
+        <div class="editor-actions">{% if item.representative_url %}<a class="button ghost" href="{{ item.representative_url }}" target="_blank" rel="noopener">代表帖子</a>{% endif %}<button class="ghost">保存编辑</button><button name="status" value="adopted">采用</button><button name="status" value="published">标记已发布</button><button class="ghost" name="status" value="skipped">跳过</button></div>
+      </form>
+    </div>
+  </article>
+{% else %}<div class="empty-state"><strong>当前没有达到阈值的趋势</strong><p>运行人物雷达中的信号扫描以更新候选。</p></div>{% endfor %}
+</section>
+{% endblock %}

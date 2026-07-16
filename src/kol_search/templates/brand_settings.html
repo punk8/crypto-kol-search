@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}品牌设置 · Crypto KOL Search{% endblock %}
+{% block content %}
+<section class="workspace-head">
+  <div><p class="eyebrow">BRAND PROFILE</p><h1>品牌回复上下文</h1><p>用于约束回复草稿和趋势选题。所有对外发布仍由人工完成。</p></div>
+</section>
+<form action="/settings/brand" method="post" class="settings-form">
+  <div class="form-grid">
+    <label>品牌名称<input name="brand_name" value="{{ brand.brand_name }}" required></label>
+    <label>X handle<input name="x_handle" value="{{ brand.x_handle }}" placeholder="your_brand" required></label>
+    <label>语气<input name="tone" value="{{ brand.tone }}"></label>
+    <label class="wide">项目简介<textarea name="description" rows="4" placeholder="项目解决什么问题、核心能力和差异点">{{ brand.description }}</textarea></label>
+    <label class="wide">目标受众<textarea name="audience" rows="3" placeholder="希望建立关系的人群与使用场景">{{ brand.audience }}</textarea></label>
+    <label>允许提及的事实<span class="field-note">每行一条</span><textarea name="allowed_claims" rows="7">{{ brand.allowed_claims|join('\n') }}</textarea></label>
+    <label>禁用词与禁用表达<span class="field-note">每行一条</span><textarea name="forbidden_terms" rows="7">{{ brand.forbidden_terms|join('\n') }}</textarea></label>
+  </div>
+  <div class="form-actions"><button type="submit">保存品牌配置</button></div>
+</form>
+{% endblock %}

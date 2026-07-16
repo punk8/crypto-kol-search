@@ -19,7 +19,10 @@ def _user_fields() -> str:
 
 
 def _tweet_fields() -> str:
-    return "created_at,public_metrics,lang,entities,author_id"
+    return (
+        "created_at,public_metrics,lang,entities,author_id,conversation_id,"
+        "in_reply_to_user_id,referenced_tweets"
+    )
 
 
 def _parse_account(data: dict[str, Any]) -> Account:
@@ -61,8 +64,11 @@ def _parse_post(data: dict[str, Any], users_by_id: dict[str, Account] | None = N
     author_username = None
     if users_by_id and author_id in users_by_id:
         author_username = users_by_id[author_id].username
+    references = data.get("referenced_tweets") or []
+    reference = references[0] if references else {}
+    post_id = str(data["id"])
     return Post(
-        id=str(data["id"]),
+        id=post_id,
         author_id=author_id,
         author_username=author_username,
         text=data.get("text", ""),
@@ -71,7 +77,16 @@ def _parse_post(data: dict[str, Any], users_by_id: dict[str, Account] | None = N
         retweet_count=int(metrics.get("retweet_count", 0)),
         reply_count=int(metrics.get("reply_count", 0)),
         quote_count=int(metrics.get("quote_count", 0)),
+        view_count=int(metrics.get("impression_count", 0)),
+        bookmark_count=int(metrics.get("bookmark_count", 0)),
         lang=data.get("lang"),
+        url=f"https://x.com/{author_username}/status/{post_id}" if author_username else None,
+        conversation_id=str(data.get("conversation_id") or post_id),
+        in_reply_to_user_id=(
+            str(data["in_reply_to_user_id"]) if data.get("in_reply_to_user_id") else None
+        ),
+        referenced_post_id=str(reference["id"]) if reference.get("id") else None,
+        reference_type=reference.get("type"),
         mentioned_usernames=_mentions_from_entities(data.get("entities")),
         raw=data,
     )
@@ -216,7 +231,12 @@ class OfficialTwitterClient:
         return out
 
     def get_user_tweets(
-        self, user_id: str, max_results: int = 10, *, username: str | None = None
+        self,
+        user_id: str,
+        max_results: int = 10,
+        *,
+        username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         n = max(5, min(100, max_results))
         data = self._request(
@@ -225,14 +245,18 @@ class OfficialTwitterClient:
             params={
                 "max_results": n,
                 "tweet.fields": _tweet_fields(),
-                "exclude": "retweets,replies",
+                "exclude": "retweets" if include_replies else "retweets,replies",
             },
         )
         posts = [_parse_post(t) for t in data.get("data") or []]
-        # fill author_id
+        # Timeline responses omit author expansions; fill known identity locally.
         for p in posts:
             if not p.author_id:
                 p.author_id = str(user_id)
+            if username and not p.author_username:
+                p.author_username = username.lstrip("@")
+            if p.author_username and not p.url:
+                p.url = f"https://x.com/{p.author_username}/status/{p.id}"
         return posts[:max_results]
 
 

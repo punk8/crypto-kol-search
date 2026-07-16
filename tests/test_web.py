@@ -119,3 +119,67 @@ def test_web_seed_build_expand_review_and_exports(monkeypatch, tmp_path: Path):
         )
         assert reviewed.status_code == 303
         assert app.state.store.get_seed_set(expanded_set["id"])["approved_count"] == 101
+
+
+def test_signal_radars_brand_config_and_manual_scan(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("KOL_DB_PATH", str(tmp_path / "signal-web.db"))
+    monkeypatch.setenv("TWITTER_BACKEND", "mock")
+    monkeypatch.setenv("KOL_ENABLE_WEEKLY_REFRESH", "false")
+    monkeypatch.setenv("KOL_ENABLE_SIGNAL_SCAN", "false")
+    with TestClient(app) as client:
+        saved = client.post(
+            "/settings/brand",
+            data={
+                "brand_name": "Signal Labs",
+                "x_handle": "signal_labs",
+                "description": "Onchain research tools",
+                "audience": "Crypto researchers",
+                "tone": "concise",
+                "allowed_claims": "Public onchain data",
+                "forbidden_terms": "guaranteed",
+            },
+            follow_redirects=False,
+        )
+        assert saved.status_code == 303
+
+        started = client.post(
+            "/signal-scans",
+            data={"backend": "mock"},
+            follow_redirects=False,
+        )
+        assert started.status_code == 303
+        for _ in range(100):
+            runs = [
+                run for run in app.state.store.list_runs() if run["kind"] == "signal_scan"
+            ]
+            if runs and runs[0]["status"].startswith("completed"):
+                break
+            time.sleep(0.05)
+
+        people = client.get("/radar/people")
+        topics = client.get("/radar/topics")
+        assert people.status_code == 200
+        assert topics.status_code == 200
+        assert "今日回复机会" in people.text
+        assert "热搜选题" in topics.text
+        assert app.state.store.list_reply_opportunities(status="all")
+        assert app.state.store.list_topic_clusters(status="all")
+
+        opportunity = app.state.store.list_reply_opportunities(status="all")[0]
+        edited = client.post(
+            f"/reply-opportunities/{opportunity['id']}",
+            data={"draft": "Human edited reply"},
+            follow_redirects=False,
+        )
+        assert edited.status_code == 303
+        assert app.state.store.list_reply_opportunities(status="all")[0]["draft"] == "Human edited reply"
+
+        published = client.post(
+            f"/reply-opportunities/{opportunity['id']}/publish",
+            data={"backend": "mock", "draft": "Human edited reply"},
+            follow_redirects=False,
+        )
+        assert published.status_code == 303, published.text
+        saved = app.state.store.get_reply_opportunity(opportunity["id"])
+        assert saved["status"] == "replied"
+        assert saved["reply_url"].startswith("https://x.com/signal_labs/status/")

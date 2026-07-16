@@ -12,6 +12,11 @@
   </div>
 </section>
 
+<section class="radar-summary">
+  <div><span class="eyebrow">SIGNAL RADAR</span><strong>人物与趋势扫描</strong><p>{% if signal_enabled %}每 {{ signal_interval }} 分钟自动刷新{% else %}自动扫描未启用，可在人物雷达手动运行{% endif %}</p></div>
+  <div class="run-actions"><a class="button ghost" href="/radar/people">人物雷达</a><a class="button ghost" href="/radar/topics">趋势雷达</a></div>
+</section>
+
 <section class="card">
   <h2>新建搜索任务</h2>
   <form action="/runs" method="post" class="form-grid">

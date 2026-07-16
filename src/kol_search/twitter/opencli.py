@@ -6,9 +6,10 @@ import shutil
 import subprocess
 import threading
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.models import Account, BackendCapabilities, Post, TrendSignal
 from kol_search.twitter.base import TwitterBackendError
 
 
@@ -33,8 +34,22 @@ def _mentions(text: str) -> list[str]:
     return list(dict.fromkeys(re.findall(r"@([A-Za-z0-9_]{1,15})", text or "")))
 
 
+def _timestamp(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text, "%a %b %d %H:%M:%S %z %Y").isoformat()
+    except ValueError:
+        return text
+
+
 class OpenCliTwitterClient:
-    """Read-only Twitter backend implemented through an authenticated OpenCLI profile."""
+    """Read-only Twitter backend implemented through an authenticated OpenCLI session."""
 
     name = "opencli"
     capabilities = BackendCapabilities(
@@ -44,6 +59,7 @@ class OpenCliTwitterClient:
         user_timeline=True,
         followings=True,
         verified_followers=False,
+        trends=True,
         user_search_page_size=20,
         post_search_page_size=100,
         batch_user_lookup_size=10,
@@ -85,15 +101,7 @@ class OpenCliTwitterClient:
                 f"OpenCLI command not found: {self.command}",
                 hint="Install OpenCLI or set OPENCLI_COMMAND.",
             )
-        command = [
-            self.command,
-            "--profile",
-            self.profile,
-            "twitter",
-            *args,
-            "-f",
-            "json",
-        ]
+        command = [self.command, "twitter", *args, "-f", "json"]
         try:
             with self._lock:
                 result = self._runner(
@@ -116,7 +124,7 @@ class OpenCliTwitterClient:
             raise TwitterBackendError(
                 f"OpenCLI command failed: {detail}",
                 status_code=77 if "AUTH_REQUIRED" in detail or "login" in detail.lower() else None,
-                hint=f"Verify `opencli --profile {self.profile} twitter whoami`.",
+                hint="Run `opencli doctor`, connect Browser Bridge, and verify X is logged in.",
             )
         try:
             payload = json.loads(result.stdout or "[]")
@@ -131,35 +139,62 @@ class OpenCliTwitterClient:
         return [item for item in payload if isinstance(item, dict)]
 
     def _account(self, item: dict[str, Any]) -> Account:
-        username = str(item.get("screen_name") or item.get("author") or "").lstrip("@")
+        user = item.get("user") or item.get("author_info") or {}
+        if not isinstance(user, dict):
+            user = {}
+        username = str(
+            item.get("screen_name")
+            or item.get("author")
+            or item.get("username")
+            or user.get("screen_name")
+            or user.get("username")
+            or ""
+        ).lstrip("@")
         return Account(
             id=self._id(username),
             username=username,
-            name=item.get("name"),
-            description=item.get("bio"),
-            followers_count=_as_int(item.get("followers")),
-            following_count=_as_int(item.get("following")),
-            tweet_count=_as_int(item.get("tweets")),
-            verified=bool(item.get("verified", False)),
-            created_at=item.get("created_at"),
-            url=item.get("url") or None,
-            location=item.get("location") or None,
+            name=item.get("name") or user.get("name"),
+            description=item.get("bio") or user.get("bio") or user.get("description"),
+            followers_count=_as_int(item.get("followers") or user.get("followers")),
+            following_count=_as_int(item.get("following") or user.get("following")),
+            tweet_count=_as_int(item.get("tweets") or user.get("tweets")),
+            verified=bool(item.get("verified", False) or user.get("verified", False)),
+            created_at=_timestamp(item.get("created_at") or user.get("created_at")),
+            url=item.get("url") or user.get("url") or None,
+            location=item.get("location") or user.get("location") or None,
             raw={"source_backend": self.name, "opencli": item},
         )
 
     def _post(self, item: dict[str, Any]) -> Post:
         username = str(item.get("author") or "").lstrip("@") or None
         text = str(item.get("text") or "")
+        post_id = str(item.get("id") or "")
+        reply_to = item.get("in_reply_to_status_id") or item.get("reply_to_id")
+        quoted_id = item.get("quoted_tweet_id") or item.get("quote_id")
         return Post(
-            id=str(item.get("id") or ""),
+            id=post_id,
             author_id=self._id(username) if username else "",
             author_username=username,
             text=text,
-            created_at=item.get("created_at"),
+            created_at=_timestamp(item.get("created_at")),
             like_count=_as_int(item.get("likes")),
             retweet_count=_as_int(item.get("retweets")),
             reply_count=_as_int(item.get("replies")),
             quote_count=_as_int(item.get("quotes")),
+            view_count=_as_int(item.get("views")),
+            bookmark_count=_as_int(item.get("bookmarks")),
+            url=(
+                item.get("url")
+                or (f"https://x.com/{username}/status/{post_id}" if username and post_id else None)
+            ),
+            conversation_id=str(item.get("conversation_id") or post_id),
+            in_reply_to_username=(
+                str(item.get("in_reply_to_username") or item.get("reply_to_username")).lstrip("@")
+                if item.get("in_reply_to_username") or item.get("reply_to_username")
+                else None
+            ),
+            referenced_post_id=str(reply_to or quoted_id) if reply_to or quoted_id else None,
+            reference_type="replied_to" if reply_to else ("quoted" if quoted_id else None),
             mentioned_usernames=_mentions(text),
             raw={"source_backend": self.name, "opencli": item},
         )
@@ -171,7 +206,9 @@ class OpenCliTwitterClient:
         if since_id:
             # OpenCLI/X search does not support since_id directly; keep the API surface compatible.
             effective = f"{query} since_id:{since_id}"
-        rows = self._run("search", effective, "--product", "live", "--limit", str(max_results))
+        rows = self._run(
+            "search", effective, "--product", "live", "--limit", str(max_results)
+        )
         return [self._post(item) for item in rows][:max_results]
 
     def search_users(self, query: str, max_results: int = 100) -> list[Account]:
@@ -183,8 +220,15 @@ class OpenCliTwitterClient:
         return self.get_users_by_usernames([handle for handle in handles if handle])[:target]
 
     def get_user_by_username(self, username: str) -> Account | None:
-        rows = self._run("profile", username.lstrip("@"))
-        return self._account(rows[0]) if rows else None
+        handle = username.lstrip("@")
+        rows = self._run("profile", handle)
+        if not rows:
+            return None
+        account = self._account(rows[0])
+        if not account.username:
+            account.username = handle
+            account.id = self._id(handle)
+        return account
 
     def get_users_by_usernames(self, usernames: list[str]) -> list[Account]:
         output: list[Account] = []
@@ -205,6 +249,7 @@ class OpenCliTwitterClient:
         max_results: int = 10,
         *,
         username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         handle = (username or user_id.removeprefix("opencli:")).lstrip("@")
         rows = self._run("tweets", handle, "--limit", str(max_results))
@@ -226,6 +271,34 @@ class OpenCliTwitterClient:
         username: str | None = None,
     ) -> list[Account]:
         return []
+
+    def get_trends(self, max_results: int = 20) -> list[TrendSignal]:
+        rows = self._run("trending", "--limit", str(max_results))
+        output: list[TrendSignal] = []
+        for rank, item in enumerate(rows, 1):
+            name = str(
+                item.get("name")
+                or item.get("trend")
+                or item.get("topic")
+                or item.get("query")
+                or ""
+            ).strip()
+            if not name:
+                continue
+            output.append(
+                TrendSignal(
+                    name=name,
+                    rank=_as_int(item.get("rank")) or rank,
+                    post_count=_as_int(
+                        item.get("post_count")
+                        or item.get("tweet_count")
+                        or item.get("volume")
+                    ),
+                    url=item.get("url"),
+                    raw=item,
+                )
+            )
+        return output[:max_results]
 
     def close(self) -> None:
         return None

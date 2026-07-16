@@ -113,8 +113,39 @@ def _parse_tweet(data: dict[str, Any]) -> Post:
 
         mentions = [m.lstrip("@") for m in re.findall(r"@([A-Za-z0-9_]{1,15})", text)]
 
+    post_id = str(data.get("id") or data.get("id_str") or data.get("tweet_id") or "")
+    references = data.get("referenced_tweets") or []
+    reference = references[0] if references and isinstance(references[0], dict) else {}
+    reference_type = (
+        reference.get("type")
+        or ("replied_to" if data.get("inReplyToId") or data.get("in_reply_to_status_id") else None)
+        or ("quoted" if data.get("quoted_tweet_id") or data.get("quotedTweet") else None)
+    )
+    reference_aliases = {
+        "reply": "replied_to",
+        "replied_to": "replied_to",
+        "quote": "quoted",
+        "quoted": "quoted",
+        "retweet": "retweeted",
+        "retweeted": "retweeted",
+    }
+    reference_type = reference_aliases.get(str(reference_type).lower()) if reference_type else None
+    referenced_post_id = (
+        reference.get("id")
+        or data.get("inReplyToId")
+        or data.get("in_reply_to_status_id")
+        or data.get("quoted_tweet_id")
+        or (data.get("quotedTweet") or {}).get("id")
+    )
+    in_reply_to_username = (
+        data.get("inReplyToUsername")
+        or data.get("in_reply_to_username")
+        or data.get("in_reply_to_screen_name")
+        or data.get("replyToUsername")
+    )
+
     return Post(
-        id=str(data.get("id") or data.get("id_str") or data.get("tweet_id") or ""),
+        id=post_id,
         author_id=author_id,
         author_username=str(author_username).lstrip("@") if author_username else None,
         text=text,
@@ -141,7 +172,34 @@ def _parse_tweet(data: dict[str, Any]) -> Post:
         quote_count=_as_int(
             data.get("quote_count") or data.get("quoteCount") or metrics.get("quote_count")
         ),
+        view_count=_as_int(
+            data.get("view_count")
+            or data.get("viewCount")
+            or data.get("views")
+            or metrics.get("impression_count")
+        ),
+        bookmark_count=_as_int(
+            data.get("bookmark_count")
+            or data.get("bookmarkCount")
+            or metrics.get("bookmark_count")
+        ),
         lang=data.get("lang"),
+        url=(
+            data.get("url")
+            or data.get("tweet_url")
+            or (f"https://x.com/{str(author_username).lstrip('@')}/status/{post_id}" if author_username and post_id else None)
+        ),
+        conversation_id=str(data.get("conversation_id") or data.get("conversationId") or post_id),
+        in_reply_to_user_id=(
+            str(data.get("in_reply_to_user_id") or data.get("inReplyToUserId"))
+            if data.get("in_reply_to_user_id") or data.get("inReplyToUserId")
+            else None
+        ),
+        in_reply_to_username=(
+            str(in_reply_to_username).lstrip("@") if in_reply_to_username else None
+        ),
+        referenced_post_id=str(referenced_post_id) if referenced_post_id else None,
+        reference_type=reference_type,
         mentioned_usernames=mentions,
         raw=data,
     )
@@ -272,11 +330,20 @@ class ThirdPartyTwitterClient:
         return out
 
     def get_user_tweets(
-        self, user_id: str, max_results: int = 10, *, username: str | None = None
+        self,
+        user_id: str,
+        max_results: int = 10,
+        *,
+        username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         payload = self._get(
             f"users/{user_id}/tweets",
-            params={"max_results": max_results, "limit": max_results},
+            params={
+                "max_results": max_results,
+                "limit": max_results,
+                "include_replies": str(include_replies).lower(),
+            },
         )
         items = self._extract_list(payload, ("data", "tweets", "results"))
         posts = [_parse_tweet(t) for t in items]

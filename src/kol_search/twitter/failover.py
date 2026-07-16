@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.models import Account, BackendCapabilities, Post, TrendSignal
 from kol_search.twitter.base import TwitterBackendError, TwitterClient
 
 
@@ -86,9 +86,14 @@ class FailoverTwitterClient:
         max_results: int = 10,
         *,
         username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         return self._call(
-            "get_user_tweets", user_id, max_results=max_results, username=username
+            "get_user_tweets",
+            user_id,
+            max_results=max_results,
+            username=username,
+            include_replies=include_replies,
         )
 
     def get_followings(self, username: str, max_results: int = 20) -> list[Account]:
@@ -115,6 +120,12 @@ class FailoverTwitterClient:
                 self.warnings.append(warning)
             return []
         return values
+
+    def get_trends(self, max_results: int = 20) -> list[TrendSignal]:
+        if not self.primary.capabilities.trends and self.fallback.capabilities.trends:
+            self.diagnostics["backend_calls"][self.fallback.name] += 1
+            return self.fallback.get_trends(max_results=max_results)
+        return self._call("get_trends", max_results=max_results)
 
     def close(self) -> None:
         for client in (self.primary, self.fallback):

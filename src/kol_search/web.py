@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -14,7 +15,13 @@ from fastapi.templating import Jinja2Templates
 
 from kol_search.db import Store
 from kol_search.jobs import JobWorker, WeeklyScheduler
+from kol_search.replies import ReplyPublisher
 from kol_search.settings import PROJECT_ROOT, Settings, get_settings
+from kol_search.twitter.base import TwitterBackendError
+from kol_search.twitter.reply import (
+    ReplyConfirmationRequiredError,
+    create_twitter_reply_client,
+)
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -51,6 +58,10 @@ def _store(request: Request) -> Store:
 
 def _settings(request: Request) -> Settings:
     return request.app.state.settings
+
+
+def _textarea_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.splitlines() if line.strip()]
 
 
 def _backends(settings: Settings) -> list[dict]:
@@ -108,8 +119,226 @@ def dashboard(request: Request) -> HTMLResponse:
             "weekly_day": settings.weekly_day,
             "weekly_hour": settings.weekly_hour,
             "weekly_enabled": settings.enable_weekly_refresh,
+            "signal_enabled": settings.enable_signal_scan,
+            "signal_interval": settings.signal_interval_minutes,
         },
     )
+
+
+@app.get("/settings/brand", response_class=HTMLResponse)
+def brand_settings(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="brand_settings.html",
+        context={"brand": _store(request).get_brand_profile()},
+    )
+
+
+@app.post("/settings/brand")
+def update_brand_settings(
+    request: Request,
+    brand_name: Annotated[str, Form()],
+    x_handle: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+    audience: Annotated[str, Form()] = "",
+    tone: Annotated[str, Form()] = "professional, concise, conversational",
+    allowed_claims: Annotated[str, Form()] = "",
+    forbidden_terms: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    if not brand_name.strip() or not x_handle.strip().lstrip("@"):
+        raise HTTPException(status_code=422, detail="品牌名称和 X handle 不能为空")
+    _store(request).save_brand_profile(
+        brand_name=brand_name,
+        x_handle=x_handle,
+        description=description,
+        audience=audience,
+        tone=tone,
+        allowed_claims=_textarea_lines(allowed_claims),
+        forbidden_terms=_textarea_lines(forbidden_terms),
+    )
+    return RedirectResponse(url="/settings/brand?saved=1", status_code=303)
+
+
+@app.get("/radar/people", response_class=HTMLResponse)
+def people_radar(
+    request: Request,
+    status: str = Query(default="pending"),
+    language: str = Query(default="all"),
+) -> HTMLResponse:
+    store = _store(request)
+    store.expire_reply_opportunities()
+    settings = _settings(request)
+    runs = [run for run in store.list_runs(30) if run.get("kind") == "signal_scan"]
+    backends = _backends(settings)
+    return templates.TemplateResponse(
+        request=request,
+        name="people_radar.html",
+        context={
+            "opportunities": store.list_reply_opportunities(
+                status=status, language=language, limit=settings.signal_reply_limit
+            ),
+            "brand": store.get_brand_profile(),
+            "status": status,
+            "language": language,
+            "runs": runs[:5],
+            "backends": backends,
+            "opencli_ready": any(
+                item["name"] == "opencli" and item["ready"] for item in backends
+            ),
+            "default_backend": settings.twitter_backend,
+            "ai_ready": bool(settings.openai_api_key),
+            "signal_enabled": settings.enable_signal_scan,
+            "signal_interval": settings.signal_interval_minutes,
+        },
+    )
+
+
+@app.post("/reply-opportunities/{opportunity_id}")
+def update_reply_opportunity(
+    request: Request,
+    opportunity_id: int,
+    status: Annotated[str | None, Form()] = None,
+    draft: Annotated[str | None, Form()] = None,
+    reply_url: Annotated[str | None, Form()] = None,
+) -> RedirectResponse:
+    clean_url = (reply_url or "").strip() or None
+    if status == "replied" and (
+        not clean_url
+        or not re.match(r"^https://(?:x\.com|twitter\.com)/[^/]+/status/\d+", clean_url)
+    ):
+        raise HTTPException(status_code=422, detail="请填写有效的 X 回复链接")
+    try:
+        _store(request).update_reply_opportunity(
+            opportunity_id,
+            status=status,
+            draft=draft,
+            reply_url=clean_url,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="回复机会不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url="/radar/people", status_code=303)
+
+
+@app.post("/reply-opportunities/{opportunity_id}/publish")
+def publish_reply_opportunity(
+    request: Request,
+    opportunity_id: int,
+    draft: Annotated[str, Form()],
+    backend: Annotated[str, Form()] = "opencli",
+) -> RedirectResponse:
+    settings = _settings(request)
+    ready, reason = settings.backend_ready(backend)
+    if not ready:
+        raise HTTPException(status_code=503, detail=reason or "回复后端未就绪")
+    brand = _store(request).get_brand_profile()
+    actor_handle = (brand.get("x_handle") or "").strip().lstrip("@")
+    if not actor_handle:
+        raise HTTPException(status_code=422, detail="请先配置品牌 X handle")
+    try:
+        client = create_twitter_reply_client(backend, settings)
+    except TwitterBackendError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    try:
+        ReplyPublisher(_store(request), client, actor_handle).publish(
+            opportunity_id,
+            text=draft,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="回复机会不存在") from exc
+    except ReplyConfirmationRequiredError:
+        return RedirectResponse(
+            url="/radar/people?status=confirmation_required&send=unconfirmed",
+            status_code=303,
+        )
+    except (ValueError, TwitterBackendError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        client.close()
+    return RedirectResponse(url="/radar/people?status=replied&send=ok", status_code=303)
+
+
+@app.get("/radar/topics", response_class=HTMLResponse)
+def topic_radar(
+    request: Request,
+    status: str = Query(default="pending"),
+    lifecycle: str = Query(default="all"),
+) -> HTMLResponse:
+    settings = _settings(request)
+    clusters = _store(request).list_topic_clusters(
+        status=status, lifecycle=lifecycle, limit=settings.signal_topic_limit
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="topic_radar.html",
+        context={
+            "clusters": clusters,
+            "brand": _store(request).get_brand_profile(),
+            "status": status,
+            "lifecycle": lifecycle,
+        },
+    )
+
+
+@app.post("/topic-clusters/{cluster_id}")
+def update_topic_cluster(
+    request: Request,
+    cluster_id: int,
+    status: Annotated[str | None, Form()] = None,
+    outline: Annotated[str | None, Form()] = None,
+    draft: Annotated[str | None, Form()] = None,
+    published_url: Annotated[str | None, Form()] = None,
+) -> RedirectResponse:
+    clean_url = (published_url or "").strip() or None
+    if status == "published" and clean_url and not re.match(
+        r"^https://(?:x\.com|twitter\.com)/[^/]+/status/\d+", clean_url
+    ):
+        raise HTTPException(status_code=422, detail="发布链接必须是有效的 X 帖子链接")
+    try:
+        _store(request).update_topic_cluster(
+            cluster_id,
+            status=status,
+            outline=outline,
+            draft=draft,
+            published_url=clean_url,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="趋势话题不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url="/radar/topics", status_code=303)
+
+
+@app.post("/signal-scans")
+def create_signal_scan(
+    request: Request,
+    backend: Annotated[str, Form()] = "mock",
+    use_ai: Annotated[bool, Form()] = False,
+) -> RedirectResponse:
+    settings = _settings(request)
+    ready, reason = settings.backend_ready(backend)
+    if not ready:
+        raise HTTPException(status_code=400, detail=reason or "后端未配置")
+    brand = _store(request).get_brand_profile()
+    if not brand.get("brand_name") or not brand.get("x_handle"):
+        raise HTTPException(status_code=422, detail="请先完成品牌配置")
+    if _store(request).has_active_run("signal_scan"):
+        return RedirectResponse(url="/radar/people?active=1", status_code=303)
+    _store(request).create_run(
+        query="X KOL and topic signal scan",
+        backend=backend,
+        kind="signal_scan",
+        language="all",
+        account_type="person",
+        min_followers=0,
+        result_limit=settings.signal_reply_limit + settings.signal_topic_limit,
+        use_ai=use_ai and bool(settings.openai_api_key),
+        model=settings.openai_model,
+        config={"manual": True, "interval_minutes": settings.signal_interval_minutes},
+    )
+    request.app.state.worker.notify()
+    return RedirectResponse(url="/radar/people?started=1", status_code=303)
 
 
 @app.post("/runs")
@@ -129,7 +358,7 @@ def create_run(
     ready, reason = settings.backend_ready(backend)
     if not ready:
         raise HTTPException(status_code=400, detail=reason or "后端未配置")
-    if kind not in {"theme", "global", "seed_build", "seed_expand"}:
+    if kind not in {"theme", "global", "seed_build", "seed_expand", "signal_scan"}:
         raise HTTPException(status_code=422, detail="Invalid run kind")
     if not query.strip() and kind == "theme":
         raise HTTPException(status_code=422, detail="主题不能为空")
@@ -167,6 +396,8 @@ def run_detail(
     run = _store(request).get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if run.get("kind") == "signal_scan":
+        return RedirectResponse(url="/radar/people", status_code=303)
     results = _store(request).get_run_results(run_id, account_type)
     template = "run_fragment.html" if request.headers.get("HX-Request") else "run.html"
     return templates.TemplateResponse(

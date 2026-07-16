@@ -9,6 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from kol_search.db import Store
 from kol_search.discovery.pipeline import DiscoveryPipeline
 from kol_search.discovery.seed_pipeline import SeedPipeline
+from kol_search.discovery.signals import SignalPipeline
 from kol_search.settings import Settings
 
 
@@ -21,6 +22,7 @@ class JobWorker:
         self.settings = settings
         self.pipeline = DiscoveryPipeline(store, settings)
         self.seed_pipeline = SeedPipeline(store, settings)
+        self.signal_pipeline = SignalPipeline(store, settings)
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
@@ -70,9 +72,13 @@ class JobWorker:
 
             try:
                 pipeline = (
-                    self.seed_pipeline
-                    if run.get("kind") in {"seed_build", "seed_expand"}
-                    else self.pipeline
+                    self.signal_pipeline
+                    if run.get("kind") == "signal_scan"
+                    else (
+                        self.seed_pipeline
+                        if run.get("kind") in {"seed_build", "seed_expand"}
+                        else self.pipeline
+                    )
                 )
                 candidates = pipeline.run(run, progress)
                 status = "completed_with_warnings" if latest_warnings else "completed"
@@ -103,21 +109,35 @@ class WeeklyScheduler:
         self.scheduler = BackgroundScheduler(timezone=settings.timezone)
 
     def start(self) -> None:
-        if not self.settings.enable_weekly_refresh:
-            return
-        self.scheduler.add_job(
-            self.enqueue_global_refresh,
-            trigger="cron",
-            day_of_week=self.settings.weekly_day,
-            hour=self.settings.weekly_hour,
-            minute=0,
-            id="weekly-global-refresh",
-            replace_existing=True,
-            coalesce=True,
-            misfire_grace_time=86400,
-            max_instances=1,
-        )
-        self.scheduler.start()
+        configured = False
+        if self.settings.enable_weekly_refresh:
+            self.scheduler.add_job(
+                self.enqueue_global_refresh,
+                trigger="cron",
+                day_of_week=self.settings.weekly_day,
+                hour=self.settings.weekly_hour,
+                minute=0,
+                id="weekly-global-refresh",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=86400,
+                max_instances=1,
+            )
+            configured = True
+        if self.settings.enable_signal_scan:
+            self.scheduler.add_job(
+                self.enqueue_signal_scan,
+                trigger="interval",
+                minutes=max(5, self.settings.signal_interval_minutes),
+                id="signal-scan",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=1800,
+                max_instances=1,
+            )
+            configured = True
+        if configured:
+            self.scheduler.start()
 
     def stop(self) -> None:
         if self.scheduler.running:
@@ -139,6 +159,35 @@ class WeeklyScheduler:
             use_ai=bool(self.settings.openai_api_key),
             model=self.settings.openai_model,
             config={"scheduled": True, "timezone": self.settings.timezone},
+        )
+        self.worker.notify()
+        return run_id
+
+    def enqueue_signal_scan(self) -> int | None:
+        if self.store.has_active_run("signal_scan"):
+            return None
+        ready, reason = self.settings.backend_ready(self.settings.twitter_backend)
+        if not ready:
+            logger.warning("Signal scan skipped: %s", reason)
+            return None
+        brand = self.store.get_brand_profile()
+        if not brand.get("brand_name") or not brand.get("x_handle"):
+            logger.warning("Signal scan skipped: brand profile is incomplete")
+            return None
+        run_id = self.store.create_run(
+            query="X KOL and topic signal scan",
+            backend=self.settings.twitter_backend,
+            kind="signal_scan",
+            language="all",
+            account_type="person",
+            min_followers=0,
+            result_limit=self.settings.signal_reply_limit + self.settings.signal_topic_limit,
+            use_ai=bool(self.settings.openai_api_key),
+            model=self.settings.openai_model,
+            config={
+                "scheduled": True,
+                "interval_minutes": self.settings.signal_interval_minutes,
+            },
         )
         self.worker.notify()
         return run_id

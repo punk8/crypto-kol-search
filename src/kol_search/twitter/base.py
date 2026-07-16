@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.models import Account, BackendCapabilities, Post, TrendSignal
 
 
 def merge_client_diagnostics(
@@ -66,6 +66,7 @@ class TwitterClient(Protocol):
         max_results: int = 10,
         *,
         username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         ...
 
@@ -81,4 +82,8 @@ class TwitterClient(Protocol):
         username: str | None = None,
     ) -> list[Account]:
         """Return verified follower profiles when supported."""
+        ...
+
+    def get_trends(self, max_results: int = 20) -> list[TrendSignal]:
+        """Return native X trends when supported."""
         ...

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -100,10 +100,156 @@ CREATE TABLE IF NOT EXISTS posts (
     retweet_count INTEGER NOT NULL DEFAULT 0,
     reply_count INTEGER NOT NULL DEFAULT 0,
     quote_count INTEGER NOT NULL DEFAULT 0,
+    view_count INTEGER NOT NULL DEFAULT 0,
+    bookmark_count INTEGER NOT NULL DEFAULT 0,
     lang TEXT,
+    url TEXT,
+    conversation_id TEXT,
+    in_reply_to_user_id TEXT,
+    in_reply_to_username TEXT,
+    referenced_post_id TEXT,
+    reference_type TEXT,
     raw_json TEXT NOT NULL DEFAULT '{}',
     fetched_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS post_metric_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    like_count INTEGER NOT NULL DEFAULT 0,
+    retweet_count INTEGER NOT NULL DEFAULT 0,
+    reply_count INTEGER NOT NULL DEFAULT 0,
+    quote_count INTEGER NOT NULL DEFAULT 0,
+    view_count INTEGER NOT NULL DEFAULT 0,
+    bookmark_count INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (post_id) REFERENCES posts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_metrics_post_time
+ON post_metric_snapshots(post_id, captured_at);
+
+CREATE TABLE IF NOT EXISTS scan_checkpoints (
+    source_key TEXT PRIMARY KEY,
+    since_id TEXT,
+    cursor TEXT,
+    last_success_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS brand_profile (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    brand_name TEXT NOT NULL DEFAULT '',
+    x_handle TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    audience TEXT NOT NULL DEFAULT '',
+    tone TEXT NOT NULL DEFAULT 'professional, concise, conversational',
+    allowed_claims_json TEXT NOT NULL DEFAULT '[]',
+    forbidden_terms_json TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_observations (
+    run_id INTEGER NOT NULL,
+    post_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, post_id, source_type, source_key),
+    FOREIGN KEY (run_id) REFERENCES runs(id),
+    FOREIGN KEY (post_id) REFERENCES posts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_observations_post ON post_observations(post_id, observed_at);
+
+CREATE TABLE IF NOT EXISTS reply_opportunities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    language TEXT NOT NULL DEFAULT 'unknown',
+    score_json TEXT NOT NULL DEFAULT '{}',
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    draft TEXT NOT NULL DEFAULT '',
+    draft_source TEXT NOT NULL DEFAULT 'rules',
+    manually_edited INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_scored_at TEXT NOT NULL,
+    replied_at TEXT,
+    reply_url TEXT,
+    next_check_at TEXT,
+    responded_at TEXT,
+    outcome_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (post_id) REFERENCES posts(id),
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_reply_opportunities_queue
+ON reply_opportunities(status, score DESC, expires_at);
+
+CREATE TABLE IF NOT EXISTS reply_outcome_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    opportunity_id INTEGER NOT NULL,
+    stage_hours INTEGER NOT NULL,
+    captured_at TEXT NOT NULL,
+    like_count INTEGER NOT NULL DEFAULT 0,
+    retweet_count INTEGER NOT NULL DEFAULT 0,
+    reply_count INTEGER NOT NULL DEFAULT 0,
+    quote_count INTEGER NOT NULL DEFAULT 0,
+    view_count INTEGER NOT NULL DEFAULT 0,
+    author_responded INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(opportunity_id, stage_hours),
+    FOREIGN KEY (opportunity_id) REFERENCES reply_opportunities(id)
+);
+
+CREATE TABLE IF NOT EXISTS topic_clusters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT 'unknown',
+    lifecycle TEXT NOT NULL DEFAULT 'emerging',
+    heat_score REAL NOT NULL DEFAULT 0,
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    outline TEXT NOT NULL DEFAULT '',
+    draft TEXT NOT NULL DEFAULT '',
+    draft_source TEXT NOT NULL DEFAULT 'rules',
+    manually_edited INTEGER NOT NULL DEFAULT 0,
+    editorial_status TEXT NOT NULL DEFAULT 'pending',
+    native_trend INTEGER NOT NULL DEFAULT 0,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT,
+    published_url TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_topic_clusters_radar
+ON topic_clusters(editorial_status, heat_score DESC, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS topic_cluster_posts (
+    cluster_id INTEGER NOT NULL,
+    post_id TEXT NOT NULL,
+    relevance REAL NOT NULL DEFAULT 0,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (cluster_id, post_id),
+    FOREIGN KEY (cluster_id) REFERENCES topic_clusters(id),
+    FOREIGN KEY (post_id) REFERENCES posts(id)
+);
+
+CREATE TABLE IF NOT EXISTS topic_metric_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cluster_id INTEGER NOT NULL,
+    captured_at TEXT NOT NULL,
+    post_count INTEGER NOT NULL DEFAULT 0,
+    unique_authors INTEGER NOT NULL DEFAULT 0,
+    engagement_total INTEGER NOT NULL DEFAULT 0,
+    kol_count INTEGER NOT NULL DEFAULT 0,
+    heat_score REAL NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (cluster_id) REFERENCES topic_clusters(id)
+);
+CREATE INDEX IF NOT EXISTS idx_topic_metrics_cluster_time
+ON topic_metric_snapshots(cluster_id, captured_at);
 
 CREATE TABLE IF NOT EXISTS candidate_scores (
     run_id INTEGER NOT NULL,
@@ -260,6 +406,14 @@ ACCOUNT_COLUMNS: dict[str, str] = {
 POST_COLUMNS: dict[str, str] = {
     "lang": "TEXT",
     "fetched_at": "TEXT",
+    "view_count": "INTEGER NOT NULL DEFAULT 0",
+    "bookmark_count": "INTEGER NOT NULL DEFAULT 0",
+    "url": "TEXT",
+    "conversation_id": "TEXT",
+    "in_reply_to_user_id": "TEXT",
+    "in_reply_to_username": "TEXT",
+    "referenced_post_id": "TEXT",
+    "reference_type": "TEXT",
 }
 
 EDGE_COLUMNS: dict[str, str] = {
@@ -323,6 +477,13 @@ class Store:
             for name, definition in POST_COLUMNS.items():
                 if name not in post_existing:
                     connection.execute(f"ALTER TABLE posts ADD COLUMN {name} {definition}")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_posts_conversation "
+                "ON posts(conversation_id, created_at)"
+            )
             edge_existing = {
                 row[1] for row in connection.execute("PRAGMA table_info(discovery_edges)")
             }
@@ -341,6 +502,14 @@ class Store:
             )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, ?)",
+                (utc_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, ?)",
+                (utc_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)",
                 (utc_now(),),
             )
 
@@ -586,10 +755,10 @@ class Store:
             )
         return effective_id
 
-    def save_posts(self, posts: list[Post]) -> None:
+    def save_posts(self, posts: list[Post], *, captured_at: str | None = None) -> None:
         if not posts:
             return
-        now = utc_now()
+        now = captured_at or utc_now()
         for post in posts:
             if post.author_username:
                 post.author_id = self.resolve_account_id(post.author_username, post.author_id)
@@ -598,23 +767,103 @@ class Store:
                 """
                 INSERT INTO posts (
                     id, author_id, author_username, text, created_at, like_count, retweet_count,
-                    reply_count, quote_count, lang, raw_json, fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reply_count, quote_count, view_count, bookmark_count, lang, url,
+                    conversation_id, in_reply_to_user_id, in_reply_to_username,
+                    referenced_post_id, reference_type, raw_json, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     text=excluded.text, like_count=excluded.like_count,
                     retweet_count=excluded.retweet_count, reply_count=excluded.reply_count,
-                    quote_count=excluded.quote_count, raw_json=excluded.raw_json,
-                    fetched_at=excluded.fetched_at
+                    quote_count=excluded.quote_count, view_count=excluded.view_count,
+                    bookmark_count=excluded.bookmark_count, lang=excluded.lang,
+                    url=COALESCE(excluded.url, posts.url),
+                    conversation_id=COALESCE(excluded.conversation_id, posts.conversation_id),
+                    in_reply_to_user_id=COALESCE(excluded.in_reply_to_user_id, posts.in_reply_to_user_id),
+                    in_reply_to_username=COALESCE(excluded.in_reply_to_username, posts.in_reply_to_username),
+                    referenced_post_id=COALESCE(excluded.referenced_post_id, posts.referenced_post_id),
+                    reference_type=COALESCE(excluded.reference_type, posts.reference_type),
+                    raw_json=excluded.raw_json, fetched_at=excluded.fetched_at
                 """,
                 [
                     (
                         post.id, post.author_id, post.author_username, post.text, post.created_at,
                         post.like_count, post.retweet_count, post.reply_count, post.quote_count,
-                        post.lang, _json(post.raw), now,
+                        post.view_count, post.bookmark_count, post.lang, post.url,
+                        post.conversation_id, post.in_reply_to_user_id,
+                        post.in_reply_to_username, post.referenced_post_id,
+                        post.reference_type, _json(post.raw), now,
                     )
                     for post in posts if post.id
                 ],
             )
+            connection.executemany(
+                """
+                INSERT INTO post_metric_snapshots (
+                    post_id, captured_at, like_count, retweet_count, reply_count,
+                    quote_count, view_count, bookmark_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        post.id, now, post.like_count, post.retweet_count,
+                        post.reply_count, post.quote_count, post.view_count,
+                        post.bookmark_count,
+                    )
+                    for post in posts if post.id
+                ],
+            )
+
+    def get_post_metric_history(self, post_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM post_metric_snapshots
+                WHERE post_id=?
+                ORDER BY captured_at DESC, id DESC
+                LIMIT ?
+                """,
+                (post_id, max(1, min(limit, 1000))),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def upsert_scan_checkpoint(
+        self,
+        source_key: str,
+        *,
+        since_id: str | None = None,
+        cursor: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        succeeded_at: str | None = None,
+    ) -> None:
+        now = succeeded_at or utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO scan_checkpoints (
+                    source_key, since_id, cursor, last_success_at, metadata_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_key) DO UPDATE SET
+                    since_id=excluded.since_id, cursor=excluded.cursor,
+                    last_success_at=excluded.last_success_at,
+                    metadata_json=excluded.metadata_json, updated_at=excluded.updated_at
+                """,
+                (source_key, since_id, cursor, now, _json(metadata or {}), now),
+            )
+
+    def get_scan_checkpoint(self, source_key: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM scan_checkpoints WHERE source_key=?",
+                (source_key,),
+            ).fetchone()
+        if not row:
+            return None
+        output = dict(row)
+        try:
+            output["metadata"] = json.loads(output.pop("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            output["metadata"] = {}
+        return output
 
     def save_candidates(self, run_id: int, candidates: list[Candidate]) -> None:
         with self.connection() as connection:
@@ -761,6 +1010,18 @@ class Store:
         with self.connection() as connection:
             rows = connection.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [self._decode_run(row) or {} for row in rows]
+
+    def has_active_run(self, kind: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM runs
+                WHERE kind=? AND status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (kind,),
+            ).fetchone()
+        return row is not None
 
     def get_run_results(self, run_id: int, account_type: str = "all") -> list[dict[str, Any]]:
         sql = """
@@ -1085,3 +1346,547 @@ class Store:
                 (seed_set_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_brand_profile(self) -> dict[str, Any]:
+        with self.connection() as connection:
+            row = connection.execute("SELECT * FROM brand_profile WHERE id=1").fetchone()
+        if not row:
+            return {
+                "id": 1,
+                "brand_name": "",
+                "x_handle": "",
+                "description": "",
+                "audience": "",
+                "tone": "professional, concise, conversational",
+                "allowed_claims": [],
+                "forbidden_terms": [],
+                "updated_at": None,
+            }
+        value = dict(row)
+        for source, target in (
+            ("allowed_claims_json", "allowed_claims"),
+            ("forbidden_terms_json", "forbidden_terms"),
+        ):
+            try:
+                value[target] = json.loads(value.pop(source) or "[]")
+            except json.JSONDecodeError:
+                value[target] = []
+        return value
+
+    def save_brand_profile(
+        self,
+        *,
+        brand_name: str,
+        x_handle: str,
+        description: str,
+        audience: str,
+        tone: str,
+        allowed_claims: list[str],
+        forbidden_terms: list[str],
+    ) -> None:
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO brand_profile(
+                    id, brand_name, x_handle, description, audience, tone,
+                    allowed_claims_json, forbidden_terms_json, updated_at
+                ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    brand_name=excluded.brand_name, x_handle=excluded.x_handle,
+                    description=excluded.description, audience=excluded.audience,
+                    tone=excluded.tone, allowed_claims_json=excluded.allowed_claims_json,
+                    forbidden_terms_json=excluded.forbidden_terms_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    brand_name.strip(), x_handle.strip().lstrip("@"), description.strip(),
+                    audience.strip(), tone.strip(), _json(allowed_claims),
+                    _json(forbidden_terms), now,
+                ),
+            )
+
+    def latest_approved_watch_accounts(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT id FROM seed_sets WHERE status='ready' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return []
+            rows = connection.execute(
+                """
+                SELECT a.*, m.rank AS seed_rank, m.primary_topic,
+                       m.language_bucket, m.score AS seed_score
+                FROM seed_members m JOIN accounts a ON a.id=m.account_id
+                WHERE m.seed_set_id=? AND m.review_status='approved'
+                  AND (m.account_type_bucket='person' OR a.account_type='person')
+                ORDER BY m.rank IS NULL, m.rank, m.score DESC
+                LIMIT ?
+                """,
+                (row["id"], max(1, min(limit, 500))),
+            ).fetchall()
+        return [dict(item) for item in rows]
+
+    def save_post_observations(
+        self,
+        run_id: int,
+        observations: list[tuple[str, str, str]],
+        *,
+        observed_at: str | None = None,
+    ) -> None:
+        if not observations:
+            return
+        now = observed_at or utc_now()
+        with self.connection() as connection:
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO post_observations(
+                    run_id, post_id, source_type, source_key, observed_at
+                ) VALUES(?, ?, ?, ?, ?)
+                """,
+                [
+                    (run_id, post_id, source_type, source_key, now)
+                    for post_id, source_type, source_key in observations
+                ],
+            )
+
+    def list_recent_signal_posts(self, hours: int = 48) -> list[dict[str, Any]]:
+        modifier = f"-{max(1, min(hours, 168))} hours"
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT p.*, a.name AS author_name, a.followers_count, a.account_type,
+                       a.languages_json, a.topics_json,
+                       GROUP_CONCAT(DISTINCT o.source_type) AS source_types
+                FROM posts p
+                LEFT JOIN accounts a ON a.id=p.author_id
+                LEFT JOIN post_observations o ON o.post_id=p.id
+                WHERE julianday(p.created_at) >= julianday('now', ?)
+                GROUP BY p.id
+                ORDER BY p.created_at DESC
+                """,
+                (modifier,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_reply_opportunity(
+        self,
+        *,
+        post_id: str,
+        account_id: str,
+        score: float,
+        language: str,
+        score_payload: dict[str, Any],
+        reasons: list[str],
+        draft: str,
+        draft_source: str,
+        expires_at: str,
+        observed_at: str | None = None,
+    ) -> int:
+        now = observed_at or utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO reply_opportunities(
+                    post_id, account_id, score, status, language, score_json,
+                    reasons_json, draft, draft_source, expires_at, first_seen_at,
+                    last_scored_at
+                ) VALUES(?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(post_id) DO UPDATE SET
+                    account_id=excluded.account_id, score=excluded.score,
+                    language=excluded.language, score_json=excluded.score_json,
+                    reasons_json=excluded.reasons_json,
+                    draft=CASE WHEN reply_opportunities.manually_edited=1
+                               THEN reply_opportunities.draft ELSE excluded.draft END,
+                    draft_source=CASE WHEN reply_opportunities.manually_edited=1
+                                      THEN reply_opportunities.draft_source
+                                      ELSE excluded.draft_source END,
+                    expires_at=excluded.expires_at,
+                    last_scored_at=excluded.last_scored_at
+                """,
+                (
+                    post_id, account_id, score, language, _json(score_payload),
+                    _json(reasons), draft, draft_source, expires_at, now, now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT id FROM reply_opportunities WHERE post_id=?", (post_id,)
+            ).fetchone()
+        return int(row["id"])
+
+    @staticmethod
+    def _decode_reply_opportunity(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        value = dict(row)
+        for source, target, fallback in (
+            ("score_json", "score_payload", {}),
+            ("reasons_json", "reasons", []),
+            ("outcome_json", "outcome", {}),
+        ):
+            try:
+                value[target] = json.loads(value.pop(source) or _json(fallback))
+            except json.JSONDecodeError:
+                value[target] = fallback
+        return value
+
+    def expire_reply_opportunities(self, now: str | None = None) -> int:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE reply_opportunities SET status='expired'
+                WHERE status='pending' AND expires_at<=?
+                """,
+                (now or utc_now(),),
+            )
+        return cursor.rowcount
+
+    def list_reply_opportunities(
+        self,
+        *,
+        status: str = "pending",
+        language: str = "all",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT ro.*, p.text, p.created_at, p.url AS post_url, p.like_count,
+                   p.retweet_count, p.reply_count, p.quote_count, p.view_count,
+                   a.username, a.name, a.followers_count, a.profile_image_url
+            FROM reply_opportunities ro
+            JOIN posts p ON p.id=ro.post_id
+            LEFT JOIN accounts a ON a.id=ro.account_id
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if status != "all":
+            sql += " AND ro.status=?"
+            params.append(status)
+        if language != "all":
+            sql += " AND ro.language=?"
+            params.append(language)
+        sql += " ORDER BY ro.score DESC, p.created_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.connection() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [self._decode_reply_opportunity(row) for row in rows]
+
+    def get_reply_opportunity(self, opportunity_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT ro.*, p.text, p.created_at, p.url AS post_url,
+                       p.conversation_id, p.author_username,
+                       a.username, a.name, a.followers_count
+                FROM reply_opportunities ro
+                JOIN posts p ON p.id=ro.post_id
+                LEFT JOIN accounts a ON a.id=ro.account_id
+                WHERE ro.id=?
+                """,
+                (opportunity_id,),
+            ).fetchone()
+        return self._decode_reply_opportunity(row) if row else None
+
+    def update_reply_opportunity(
+        self,
+        opportunity_id: int,
+        *,
+        status: str | None = None,
+        draft: str | None = None,
+        reply_url: str | None = None,
+    ) -> None:
+        allowed = {
+            "pending", "replied", "confirmation_required", "skipped", "expired", "responded"
+        }
+        if status is not None and status not in allowed:
+            raise ValueError("Invalid reply opportunity status")
+        now = datetime.now(timezone.utc)
+        with self.connection() as connection:
+            existing = connection.execute(
+                "SELECT * FROM reply_opportunities WHERE id=?", (opportunity_id,)
+            ).fetchone()
+            if not existing:
+                raise KeyError(opportunity_id)
+            if status == "replied" and not (reply_url or existing["reply_url"]):
+                raise ValueError("Reply URL is required when marking replied")
+            values = {
+                "status": status or existing["status"],
+                "draft": draft if draft is not None else existing["draft"],
+                "manually_edited": 1 if draft is not None else existing["manually_edited"],
+                "reply_url": reply_url if reply_url is not None else existing["reply_url"],
+                "replied_at": existing["replied_at"],
+                "next_check_at": existing["next_check_at"],
+            }
+            if status == "replied" and not values["replied_at"]:
+                values["replied_at"] = now.isoformat()
+                values["next_check_at"] = (now + timedelta(hours=1)).isoformat()
+            if status in {"pending", "confirmation_required", "skipped", "expired"}:
+                values["next_check_at"] = None
+            connection.execute(
+                """
+                UPDATE reply_opportunities SET
+                    status=?, draft=?, manually_edited=?, reply_url=?,
+                    replied_at=?, next_check_at=?
+                WHERE id=?
+                """,
+                (
+                    values["status"], values["draft"], values["manually_edited"],
+                    values["reply_url"], values["replied_at"],
+                    values["next_check_at"], opportunity_id,
+                ),
+            )
+
+    def due_reply_outcomes(self, now: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT ro.*, p.conversation_id, p.author_username,
+                       bp.x_handle AS brand_handle
+                FROM reply_opportunities ro
+                JOIN posts p ON p.id=ro.post_id
+                LEFT JOIN brand_profile bp ON bp.id=1
+                WHERE ro.status IN ('replied', 'responded')
+                  AND ro.next_check_at IS NOT NULL AND ro.next_check_at<=?
+                ORDER BY ro.next_check_at LIMIT ?
+                """,
+                (now or utc_now(), max(1, min(limit, 100))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_reply_outcome(
+        self,
+        opportunity_id: int,
+        *,
+        stage_hours: int,
+        metrics: dict[str, int],
+        author_responded: bool,
+        payload: dict[str, Any],
+        captured_at: str | None = None,
+    ) -> None:
+        if stage_hours not in {1, 6, 24}:
+            raise ValueError("Invalid reply outcome stage")
+        now = captured_at or utc_now()
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT replied_at, outcome_json FROM reply_opportunities WHERE id=?",
+                (opportunity_id,),
+            ).fetchone()
+            if not row:
+                raise KeyError(opportunity_id)
+            connection.execute(
+                """
+                INSERT INTO reply_outcome_snapshots(
+                    opportunity_id, stage_hours, captured_at, like_count,
+                    retweet_count, reply_count, quote_count, view_count,
+                    author_responded, payload_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(opportunity_id, stage_hours) DO UPDATE SET
+                    captured_at=excluded.captured_at, like_count=excluded.like_count,
+                    retweet_count=excluded.retweet_count, reply_count=excluded.reply_count,
+                    quote_count=excluded.quote_count, view_count=excluded.view_count,
+                    author_responded=excluded.author_responded,
+                    payload_json=excluded.payload_json
+                """,
+                (
+                    opportunity_id, stage_hours, now, metrics.get("like_count", 0),
+                    metrics.get("retweet_count", 0), metrics.get("reply_count", 0),
+                    metrics.get("quote_count", 0), metrics.get("view_count", 0),
+                    int(author_responded), _json(payload),
+                ),
+            )
+            replied_at = datetime.fromisoformat(row["replied_at"])
+            next_stage = {1: 6, 6: 24, 24: None}[stage_hours]
+            next_check = (
+                (replied_at + timedelta(hours=next_stage)).isoformat()
+                if next_stage is not None
+                else None
+            )
+            try:
+                outcome = json.loads(row["outcome_json"] or "{}")
+            except json.JSONDecodeError:
+                outcome = {}
+            outcome[str(stage_hours)] = {"metrics": metrics, "author_responded": author_responded}
+            connection.execute(
+                """
+                UPDATE reply_opportunities SET outcome_json=?, next_check_at=?,
+                    status=CASE WHEN ? THEN 'responded' ELSE status END,
+                    responded_at=CASE WHEN ? THEN COALESCE(responded_at, ?) ELSE responded_at END
+                WHERE id=?
+                """,
+                (
+                    _json(outcome), next_check, int(author_responded),
+                    int(author_responded), now, opportunity_id,
+                ),
+            )
+
+    def upsert_topic_cluster(
+        self,
+        *,
+        fingerprint: str,
+        title: str,
+        summary: str,
+        language: str,
+        lifecycle: str,
+        heat_score: float,
+        metrics: dict[str, Any],
+        outline: str,
+        draft: str,
+        draft_source: str,
+        native_trend: bool,
+        post_ids: list[tuple[str, float]],
+        observed_at: str | None = None,
+    ) -> int:
+        if lifecycle not in {"emerging", "rising", "breakout", "declining"}:
+            raise ValueError("Invalid topic lifecycle")
+        now = observed_at or utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO topic_clusters(
+                    fingerprint, title, summary, language, lifecycle, heat_score,
+                    metrics_json, outline, draft, draft_source, native_trend,
+                    first_seen_at, last_seen_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    title=excluded.title, summary=excluded.summary,
+                    language=excluded.language, lifecycle=excluded.lifecycle,
+                    heat_score=excluded.heat_score, metrics_json=excluded.metrics_json,
+                    outline=CASE WHEN topic_clusters.manually_edited=1
+                                 THEN topic_clusters.outline ELSE excluded.outline END,
+                    draft=CASE WHEN topic_clusters.manually_edited=1
+                               THEN topic_clusters.draft ELSE excluded.draft END,
+                    draft_source=CASE WHEN topic_clusters.manually_edited=1
+                                      THEN topic_clusters.draft_source
+                                      ELSE excluded.draft_source END,
+                    native_trend=excluded.native_trend, last_seen_at=excluded.last_seen_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    fingerprint, title, summary, language, lifecycle, heat_score,
+                    _json(metrics), outline, draft, draft_source, int(native_trend),
+                    now, now, now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT id FROM topic_clusters WHERE fingerprint=?", (fingerprint,)
+            ).fetchone()
+            cluster_id = int(row["id"])
+            connection.executemany(
+                """
+                INSERT INTO topic_cluster_posts(cluster_id, post_id, relevance, observed_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(cluster_id, post_id) DO UPDATE SET
+                    relevance=excluded.relevance, observed_at=excluded.observed_at
+                """,
+                [(cluster_id, post_id, relevance, now) for post_id, relevance in post_ids],
+            )
+            connection.execute(
+                """
+                INSERT INTO topic_metric_snapshots(
+                    cluster_id, captured_at, post_count, unique_authors,
+                    engagement_total, kol_count, heat_score, payload_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cluster_id, now, metrics.get("post_count", 0),
+                    metrics.get("unique_authors", 0), metrics.get("engagement_total", 0),
+                    metrics.get("kol_count", 0), heat_score, _json(metrics),
+                ),
+            )
+        return cluster_id
+
+    @staticmethod
+    def _decode_topic_cluster(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            value["metrics"] = json.loads(value.pop("metrics_json") or "{}")
+        except json.JSONDecodeError:
+            value["metrics"] = {}
+        return value
+
+    def list_topic_clusters(
+        self,
+        *,
+        status: str = "pending",
+        lifecycle: str = "all",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT tc.*,
+                   (SELECT p.url FROM topic_cluster_posts tcp JOIN posts p ON p.id=tcp.post_id
+                    WHERE tcp.cluster_id=tc.id
+                    ORDER BY (p.like_count+p.retweet_count+p.reply_count+p.quote_count) DESC
+                    LIMIT 1) AS representative_url,
+                   (SELECT p.author_username FROM topic_cluster_posts tcp JOIN posts p ON p.id=tcp.post_id
+                    WHERE tcp.cluster_id=tc.id
+                    ORDER BY (p.like_count+p.retweet_count+p.reply_count+p.quote_count) DESC
+                    LIMIT 1) AS representative_author
+            FROM topic_clusters tc WHERE 1=1
+        """
+        params: list[Any] = []
+        if status != "all":
+            sql += " AND tc.editorial_status=?"
+            params.append(status)
+        if lifecycle != "all":
+            sql += " AND tc.lifecycle=?"
+            params.append(lifecycle)
+        sql += " ORDER BY tc.heat_score DESC, tc.last_seen_at DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.connection() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [self._decode_topic_cluster(row) for row in rows]
+
+    def get_topic_cluster(self, cluster_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM topic_clusters WHERE id=?", (cluster_id,)
+            ).fetchone()
+            if not row:
+                return None
+            posts = connection.execute(
+                """
+                SELECT p.*, tcp.relevance, a.followers_count
+                FROM topic_cluster_posts tcp JOIN posts p ON p.id=tcp.post_id
+                LEFT JOIN accounts a ON a.id=p.author_id
+                WHERE tcp.cluster_id=?
+                ORDER BY (p.like_count+p.retweet_count+p.reply_count+p.quote_count) DESC
+                LIMIT 20
+                """,
+                (cluster_id,),
+            ).fetchall()
+        value = self._decode_topic_cluster(row)
+        value["posts"] = [dict(item) for item in posts]
+        return value
+
+    def update_topic_cluster(
+        self,
+        cluster_id: int,
+        *,
+        status: str | None = None,
+        outline: str | None = None,
+        draft: str | None = None,
+        published_url: str | None = None,
+    ) -> None:
+        allowed = {"pending", "adopted", "published", "skipped"}
+        if status is not None and status not in allowed:
+            raise ValueError("Invalid editorial status")
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM topic_clusters WHERE id=?", (cluster_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(cluster_id)
+            next_status = status or row["editorial_status"]
+            connection.execute(
+                """
+                UPDATE topic_clusters SET editorial_status=?, outline=?, draft=?,
+                    manually_edited=?, published_url=?, published_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    next_status,
+                    outline if outline is not None else row["outline"],
+                    draft if draft is not None else row["draft"],
+                    1 if outline is not None or draft is not None else row["manually_edited"],
+                    published_url if published_url is not None else row["published_url"],
+                    utc_now() if next_status == "published" and not row["published_at"] else row["published_at"],
+                    utc_now(), cluster_id,
+                ),
+            )

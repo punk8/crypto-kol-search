@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.models import Account, BackendCapabilities, Post, TrendSignal
 from kol_search.settings import PROJECT_ROOT
 
 
@@ -18,12 +19,21 @@ class MockTwitterClient:
     """Offline deterministic backend using fixtures/."""
 
     name = "mock"
-    capabilities = BackendCapabilities(user_search=True, followings=True, verified_followers=True)
+    capabilities = BackendCapabilities(
+        user_search=True, followings=True, verified_followers=True, trends=True
+    )
 
     def __init__(self, fixtures_dir: Path | None = None) -> None:
         root = fixtures_dir or (PROJECT_ROOT / "fixtures")
         users_raw = json.loads((root / "mock_users.json").read_text(encoding="utf-8"))
         tweets_raw = json.loads((root / "mock_tweets.json").read_text(encoding="utf-8"))
+        parsed_dates = [
+            datetime.fromisoformat(str(item["created_at"]).replace("Z", "+00:00"))
+            for item in tweets_raw
+            if item.get("created_at")
+        ]
+        fixture_latest = max(parsed_dates) if parsed_dates else None
+        demo_latest = datetime.now(timezone.utc) - timedelta(hours=1)
         self._users: dict[str, Account] = {}
         self._by_id: dict[str, Account] = {}
         for u in users_raw:
@@ -49,17 +59,34 @@ class MockTwitterClient:
             self._by_id[acc.id] = acc
         self._posts: list[Post] = []
         for t in tweets_raw:
+            post_id = str(t["id"])
+            username = t.get("author_username")
+            created_at = t.get("created_at")
+            if fixture_latest and created_at:
+                original = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+                created_at = (demo_latest - (fixture_latest - original)).isoformat()
             self._posts.append(
                 Post(
-                    id=str(t["id"]),
+                    id=post_id,
                     author_id=str(t["author_id"]),
                     author_username=t.get("author_username"),
                     text=t.get("text", ""),
-                    created_at=t.get("created_at"),
+                    created_at=created_at,
                     like_count=int(t.get("like_count", 0)),
                     retweet_count=int(t.get("retweet_count", 0)),
                     reply_count=int(t.get("reply_count", 0)),
                     quote_count=int(t.get("quote_count", 0)),
+                    view_count=int(t.get("view_count", 0)),
+                    bookmark_count=int(t.get("bookmark_count", 0)),
+                    lang=t.get("lang"),
+                    url=t.get("url") or (
+                        f"https://x.com/{username}/status/{post_id}" if username else None
+                    ),
+                    conversation_id=str(t.get("conversation_id") or post_id),
+                    in_reply_to_user_id=t.get("in_reply_to_user_id"),
+                    in_reply_to_username=t.get("in_reply_to_username"),
+                    referenced_post_id=t.get("referenced_post_id"),
+                    reference_type=t.get("reference_type"),
                     mentioned_usernames=[m.lstrip("@") for m in t.get("mentioned_usernames", [])],
                     raw=t,
                 )
@@ -121,7 +148,12 @@ class MockTwitterClient:
         return out
 
     def get_user_tweets(
-        self, user_id: str, max_results: int = 10, *, username: str | None = None
+        self,
+        user_id: str,
+        max_results: int = 10,
+        *,
+        username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         posts = [p for p in self._posts if p.author_id == str(user_id)]
         posts.sort(key=lambda p: p.created_at or "", reverse=True)
@@ -140,3 +172,10 @@ class MockTwitterClient:
     ) -> list[Account]:
         values = [a for a in self._by_id.values() if a.id != str(user_id) and a.verified]
         return values[:max_results]
+
+    def get_trends(self, max_results: int = 20) -> list[TrendSignal]:
+        return [
+            TrendSignal(name="DeFi", rank=1, post_count=12000),
+            TrendSignal(name="Bitcoin", rank=2, post_count=9000),
+            TrendSignal(name="Solana", rank=3, post_count=6000),
+        ][:max_results]

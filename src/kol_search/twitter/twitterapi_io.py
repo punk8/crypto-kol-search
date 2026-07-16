@@ -187,7 +187,12 @@ class TwitterApiIoClient:
         return self._dedupe(output)
 
     def get_user_tweets(
-        self, user_id: str, max_results: int = 10, *, username: str | None = None
+        self,
+        user_id: str,
+        max_results: int = 10,
+        *,
+        username: str | None = None,
+        include_replies: bool = False,
     ) -> list[Post]:
         target = max(1, min(max_results, 100))
         cursor = ""
@@ -200,7 +205,7 @@ class TwitterApiIoClient:
                 "twitter/user/last_tweets",
                 params={
                     "userId": user_id,
-                    "includeReplies": "false",
+                    "includeReplies": "true" if include_replies else "false",
                     "cursor": cursor,
                 },
             )
