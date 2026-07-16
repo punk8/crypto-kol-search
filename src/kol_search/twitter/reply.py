@@ -126,6 +126,7 @@ class OpenCliTwitterReplyClient:
         self,
         *,
         command: str = "opencli",
+        profile: str = "ddd",
         timeout: float = 90.0,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         now_provider: Callable[[], datetime] | None = None,
@@ -133,6 +134,7 @@ class OpenCliTwitterReplyClient:
         verification_attempts: int = 2,
     ) -> None:
         self.command = command
+        self.profile = profile
         self.timeout = timeout
         self._runner = runner
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
@@ -145,7 +147,15 @@ class OpenCliTwitterReplyClient:
                 f"OpenCLI command not found: {self.command}",
                 hint="Install OpenCLI or set OPENCLI_COMMAND.",
             )
-        command = [self.command, "twitter", *args, "-f", "json"]
+        command = [
+            self.command,
+            "--profile",
+            self.profile,
+            "twitter",
+            *args,
+            "-f",
+            "json",
+        ]
         try:
             result = self._runner(
                 command,
@@ -266,6 +276,7 @@ def create_twitter_reply_client(
     if name == "opencli":
         return OpenCliTwitterReplyClient(
             command=settings.opencli_command,
+            profile=settings.opencli_profile,
             timeout=settings.opencli_timeout_seconds,
         )
     if name == "twitterapi_io":

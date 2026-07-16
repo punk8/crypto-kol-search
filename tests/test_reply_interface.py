@@ -115,13 +115,13 @@ def test_opencli_reply_client_submits_and_confirms_receipt():
 
     def runner(command, **kwargs):
         calls.append(command)
-        if command[2] == "reply":
+        if command[4] == "reply":
             payload = [{
                 "status": "success",
                 "message": "Reply posted successfully.",
                 "text": "Useful signal. What changes your view?",
             }]
-        elif command[2] == "tweets":
+        elif command[4] == "tweets":
             payload = [{
                 "id": "987654321",
                 "text": "Useful signal. What changes your view?",
@@ -133,6 +133,7 @@ def test_opencli_reply_client_submits_and_confirms_receipt():
 
     client = OpenCliTwitterReplyClient(
         command="/usr/bin/true",
+        profile="ddd",
         runner=runner,
         now_provider=lambda: datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc),
         sleep=lambda _: None,
@@ -149,11 +150,11 @@ def test_opencli_reply_client_submits_and_confirms_receipt():
     assert receipt.reply_post_id == "987654321"
     assert receipt.reply_url == "https://x.com/i/status/987654321"
     assert calls[0] == [
-        "/usr/bin/true", "twitter", "reply",
+        "/usr/bin/true", "--profile", "ddd", "twitter", "reply",
         "https://x.com/alice/status/123456789",
         "Useful signal. What changes your view?", "-f", "json",
     ]
-    assert calls[1][1:6] == [
+    assert calls[1][3:8] == [
         "twitter", "tweets", "signal_labs", "--limit", "20"
     ]
 
@@ -165,7 +166,7 @@ def test_opencli_unconfirmed_submission_is_not_retried(tmp_path: Path):
         calls.append(command)
         payload = (
             [{"status": "success", "message": "Reply posted successfully."}]
-            if command[2] == "reply"
+            if command[4] == "reply"
             else []
         )
         return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
@@ -183,7 +184,7 @@ def test_opencli_unconfirmed_submission_is_not_retried(tmp_path: Path):
         ReplyPublisher(store, client, "signal_labs").publish(opportunity_id)
 
     assert store.get_reply_opportunity(opportunity_id)["status"] == "confirmation_required"
-    assert sum(1 for command in calls if command[2] == "reply") == 1
+    assert sum(1 for command in calls if command[4] == "reply") == 1
 
 
 def test_reply_backend_factory_exposes_opencli_only():

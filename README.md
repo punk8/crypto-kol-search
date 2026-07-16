@@ -33,6 +33,7 @@ kol-search web
 
 ```bash
 OPENCLI_COMMAND=opencli
+OPENCLI_PROFILE=ddd
 OPENCLI_TIMEOUT_SECONDS=90
 TWITTER_FALLBACK_BACKEND=opencli
 ```
@@ -45,7 +46,7 @@ TWITTER_FALLBACK_BACKEND=opencli
 kol-search discover "DeFi researcher" --backend opencli --limit 30
 ```
 
-项目按 OpenCLI 1.8.6 的命令接口集成，并使用当前激活的 Browser Bridge profile。Chrome 需要安装并连接 Browser Bridge、登录 X，并保持至少一个窗口打开。使用 `opencli doctor` 检查连接状态，再用 `opencli twitter search bitcoin --product live --limit 1 -f json` 做只读验证。浏览器关闭后，定时任务无法使用该后端或 fallback。
+项目按 OpenCLI 1.8.6 的命令接口集成，并显式使用 `OPENCLI_PROFILE` 指定的 Browser Bridge profile。Chrome 需要安装并连接 Browser Bridge、登录 X，并保持至少一个窗口打开。使用 `opencli profile list` 检查连接状态，再用 `opencli --profile ddd twitter search bitcoin --product live --limit 1 -f json` 做只读验证。浏览器关闭后，定时任务无法使用该后端或 fallback。
 
 ## 人物雷达与趋势雷达
 

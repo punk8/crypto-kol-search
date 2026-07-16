@@ -243,7 +243,7 @@ def test_opencli_backend_maps_read_only_commands():
 
     def runner(command, **kwargs):
         calls.append(command)
-        operation = command[2]
+        operation = command[4]
         if operation == "search":
             payload = [{
                 "id": "t1", "author": "alice", "bio": "DeFi researcher",
@@ -291,13 +291,13 @@ def test_opencli_backend_maps_read_only_commands():
     assert timeline[0].engagement == 6
     assert followings[0].id == "opencli:carol"
     assert trends[0].name == "DeFi"
-    assert all("--profile" not in command for command in calls)
-    assert calls[0][1:7] == [
+    assert all(command[1:3] == ["--profile", "ddd"] for command in calls)
+    assert calls[0][3:9] == [
         "twitter", "search", "defi", "--product", "live", "--limit"
     ]
-    assert ["profile", "alice"] == calls[1][2:4]
-    assert ["tweets", "alice", "--limit", "1"] == calls[2][2:6]
-    assert ["following", "alice"] == calls[3][2:4]
+    assert ["profile", "alice"] == calls[1][4:6]
+    assert ["tweets", "alice", "--limit", "1"] == calls[2][4:8]
+    assert ["following", "alice"] == calls[3][4:6]
 
 
 def test_failover_is_sticky_and_preserves_diagnostics():

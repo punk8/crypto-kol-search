@@ -101,7 +101,15 @@ class OpenCliTwitterClient:
                 f"OpenCLI command not found: {self.command}",
                 hint="Install OpenCLI or set OPENCLI_COMMAND.",
             )
-        command = [self.command, "twitter", *args, "-f", "json"]
+        command = [
+            self.command,
+            "--profile",
+            self.profile,
+            "twitter",
+            *args,
+            "-f",
+            "json",
+        ]
         try:
             with self._lock:
                 result = self._runner(

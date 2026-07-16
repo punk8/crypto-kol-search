@@ -117,13 +117,13 @@ class Settings(BaseSettings):
             ready = bool(self.enable_twscrape and self.twscrape_accounts_file)
             return ready, None if ready else "需要 ENABLE_TWSCRAPE=true 和账号文件"
         if name == "opencli":
-            if not self.opencli_command:
-                return False, "缺少 OPENCLI_COMMAND"
+            if not self.opencli_command or not self.opencli_profile:
+                return False, "缺少 OPENCLI_COMMAND 或 OPENCLI_PROFILE"
             if not shutil.which(self.opencli_command) and "/" not in self.opencli_command:
                 return False, f"找不到 OpenCLI 命令：{self.opencli_command}"
             try:
                 result = subprocess.run(
-                    [self.opencli_command, "doctor"],
+                    [self.opencli_command, "profile", "list"],
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -131,10 +131,16 @@ class Settings(BaseSettings):
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
                 return False, f"OpenCLI 状态检查失败：{exc}"
-            # OpenCLI starts its daemon lazily. `doctor` verifies the active
-            # Browser Bridge connection before browser commands are attempted.
-            ready = result.returncode == 0
-            return ready, None if ready else "OpenCLI doctor 执行失败"
+            output = f"{result.stdout}\n{result.stderr}"
+            ready = (
+                result.returncode == 0
+                and self.opencli_profile in output
+                and "connected" in output
+            )
+            return (
+                ready,
+                None if ready else f"OpenCLI profile {self.opencli_profile!r} 未连接",
+            )
         return False, "未知后端"
 
 
