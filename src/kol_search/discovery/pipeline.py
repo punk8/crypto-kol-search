@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from kol_search.config_loader import load_domain_config, load_seed_handles
-from kol_search.contacts import PublicContactCrawler
+from kol_search.contacts import PublicContactCrawler, jina_reader_from_settings
 from kol_search.db import Store
 from kol_search.discovery.ai_enrichment import enrich_with_openai
 from kol_search.discovery.classify import classify_account, profile_completeness, spam_penalty
@@ -144,16 +144,24 @@ class DiscoveryPipeline:
             self.store.save_candidates(run["id"], selected)
             report(75, "contact_discovery")
 
+            jina_reader, jina_config_warning = jina_reader_from_settings(self.settings)
             crawler = PublicContactCrawler(
                 max_pages=self.settings.max_site_pages,
                 cache_get=self.store.get_crawl_cache,
                 cache_set=self.store.set_crawl_cache,
+                jina_reader=jina_reader,
+                jina_config_warning=jina_config_warning,
             )
             try:
                 for candidate in selected[: self.settings.max_contact_accounts]:
                     result = crawler.crawl_account(candidate.account)
                     stats["pages_fetched"] += result.pages_fetched
                     stats["contacts_found"] += len(result.contacts)
+                    for key, value in result.diagnostics.items():
+                        if key == "jina_reader_enabled":
+                            stats[key] = bool(stats.get(key) or value)
+                        elif isinstance(value, int):
+                            stats[key] = int(stats.get(key, 0)) + value
                     warnings.extend(result.warnings)
                     self.store.save_contacts(result.contacts)
             finally:
