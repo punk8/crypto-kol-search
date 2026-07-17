@@ -82,6 +82,30 @@ pip install -e ".[ai]"
 
 设置 `OPENAI_API_KEY` 后，后台可选择模型增强。模型只负责账号类型、语言、主题和相关度分类；联系方式始终由确定性解析器从公开页面提取，不允许模型猜测。模型默认值可通过 `OPENAI_MODEL` 调整。
 
+## 可选 Jina Reader 公开网页 fallback
+
+Jina Reader 只用于联系方式富集阶段的公开网页读取 fallback，不是 X/Twitter 数据后端。默认关闭，已有的直接网页抓取始终优先；只有直接抓取发生网络/超时错误、408/429/5xx、空白或不可用正文，或公开页面格式无法由本地解析器读取时，才会尝试 Jina Reader。成功后仍使用项目内的确定性解析器提取邮箱、Telegram、Discord、LinkedIn、YouTube、官网和联系页链接，不猜测邮箱，也不会把自动发现的联系方式标记为已确认。
+
+启用时必须使用免费层 API key 的认证请求：
+
+```bash
+JINA_READER_ENABLED=true
+JINA_API_KEY=jina_your_key_here
+```
+
+可选参数：
+
+```bash
+JINA_READER_BASE_URL=https://r.jina.ai
+JINA_READER_TIMEOUT_SECONDS=20
+JINA_READER_MAX_RETRIES=1
+JINA_READER_MAX_CONTENT_BYTES=2000000
+```
+
+`JINA_READER_ENABLED=false` 时不会调用 Jina，缺少 `JINA_API_KEY` 没有影响；若设置为 `true` 但未配置 key，系统会在实际需要 fallback 时记录清晰告警，并且不会发起匿名请求。Jina 失败只会造成该页面的部分富集告警，不会让发现任务、信号扫描、雷达或回复流程整体失败。Jina 不搜索 X 账号或帖子，不读取 timeline/followers/followings/verified followers，不实现 TikTok、小红书/Rednote、Instagram 或 YouTube 发现，也不绕过登录、认证、robots.txt、访问限制、paywall 或 X 平台限制。
+
+安全边界保持不变：发送给 Jina 之前仍先执行现有 URL 规范化、SSRF 防护、DNS 公网校验、端口限制、robots.txt 策略、跳转校验、页面数量和大小限制。联系方式证据中的 `source_url` 仍是原始公开目标 URL，不会保存 `https://r.jina.ai/...` 作为规范来源。
+
 ## 安全和数据边界
 
 - Web 服务默认只绑定 `127.0.0.1`，没有登录模块；不要直接暴露到公网。

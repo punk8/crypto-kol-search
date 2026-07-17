@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from kol_search.config_loader import load_domain_config
-from kol_search.contacts import PublicContactCrawler
+from kol_search.contacts import PublicContactCrawler, jina_reader_from_settings
 from kol_search.db import Store
 from kol_search.discovery.classify import classify_account, profile_completeness, spam_penalty
 from kol_search.discovery.filter_domain import domain_relevance_score
@@ -350,16 +350,24 @@ class SeedPipeline:
     ) -> None:
         if backend == "mock":
             return
+        jina_reader, jina_config_warning = jina_reader_from_settings(self.settings)
         crawler = PublicContactCrawler(
             max_pages=self.settings.max_site_pages,
             cache_get=self.store.get_crawl_cache,
             cache_set=self.store.set_crawl_cache,
+            jina_reader=jina_reader,
+            jina_config_warning=jina_config_warning,
         )
         try:
             for candidate in candidates[: self.settings.max_contact_accounts]:
                 result = crawler.crawl_account(candidate.account)
                 stats["contact_pages"] = int(stats.get("contact_pages", 0)) + result.pages_fetched
                 stats["contacts_found"] = int(stats.get("contacts_found", 0)) + len(result.contacts)
+                for key, value in result.diagnostics.items():
+                    if key == "jina_reader_enabled":
+                        stats[key] = bool(stats.get(key) or value)
+                    elif isinstance(value, int):
+                        stats[key] = int(stats.get(key, 0)) + value
                 warnings.extend(result.warnings)
                 self.store.save_contacts(result.contacts)
         finally:

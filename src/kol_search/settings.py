@@ -58,6 +58,19 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
 
+    jina_reader_enabled: bool = Field(default=False, alias="JINA_READER_ENABLED")
+    jina_api_key: str | None = Field(default=None, alias="JINA_API_KEY")
+    jina_reader_base_url: str = Field(default="https://r.jina.ai", alias="JINA_READER_BASE_URL")
+    jina_reader_timeout_seconds: float = Field(
+        default=20.0, gt=0, le=60, alias="JINA_READER_TIMEOUT_SECONDS"
+    )
+    jina_reader_max_retries: int = Field(
+        default=1, ge=0, le=3, alias="JINA_READER_MAX_RETRIES"
+    )
+    jina_reader_max_content_bytes: int = Field(
+        default=2_000_000, gt=0, le=10_000_000, alias="JINA_READER_MAX_CONTENT_BYTES"
+    )
+
     web_host: str = Field(default="127.0.0.1", alias="KOL_WEB_HOST")
     web_port: int = Field(default=8765, alias="KOL_WEB_PORT")
     timezone: str = Field(default="Asia/Shanghai", alias="KOL_TIMEZONE")
@@ -97,6 +110,13 @@ class Settings(BaseSettings):
         if not p.is_absolute():
             p = PROJECT_ROOT / p
         return p
+
+    def jina_reader_ready(self) -> tuple[bool, str | None]:
+        if not self.jina_reader_enabled:
+            return False, None
+        if not self.jina_api_key:
+            return False, "JINA_READER_ENABLED=true requires JINA_API_KEY"
+        return True, None
 
     def backend_ready(self, name: str) -> tuple[bool, str | None]:
         if name == "mock":
