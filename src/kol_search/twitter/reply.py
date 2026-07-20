@@ -267,6 +267,8 @@ class OpenCliTwitterReplyClient:
 def create_twitter_reply_client(
     backend: str,
     settings: Settings,
+    *,
+    profile: str | None = None,
 ) -> TwitterReplyClient:
     """Create a write adapter independently from the configured read adapter."""
 
@@ -276,7 +278,7 @@ def create_twitter_reply_client(
     if name == "opencli":
         return OpenCliTwitterReplyClient(
             command=settings.opencli_command,
-            profile=settings.opencli_profile,
+            profile=profile or settings.opencli_profile,
             timeout=settings.opencli_timeout_seconds,
         )
     if name == "twitterapi_io":

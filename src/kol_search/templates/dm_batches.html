@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}DM Outreach{% endblock %}
+{% block content %}
+<section class="run-head"><div><p class="eyebrow">CONTROLLED BATCH</p><h1>DM Outreach</h1><p>每位 KOL 都有独立持久化任务。无批量重试、无自动跟进、无发送账号切换。</p></div><a class="button" href="/library">从 KOL 总库选择</a></section>
+{% if not official_dm_ready %}<div class="notice warning">真实 X DM 阻塞：{{ official_dm_reason }}。当前仅允许 mock / dry-run 批次。</div>{% endif %}
+<div class="table-wrap"><table><thead><tr><th>批次</th><th>发送账号</th><th>模板</th><th>状态</th><th>总数</th><th>Real sent</th><th>Failed</th><th>Skipped / dry run</th><th>创建时间</th></tr></thead><tbody>{% for item in batches %}<tr><td><a href="/outreach/dm/{{ item.id }}"><strong>#{{ item.id }}</strong></a></td><td>{{ item.sender_label }}<small>@{{ item.sender_handle }} · {{ item.send_method }}</small></td><td>{{ item.template_key }}</td><td>{% if item.send_method=='mock' and item.status=='completed' %}<strong>DRY RUN — NOT SENT TO X</strong>{% else %}<span class="status {{ item.status }}">{{ item.status }}</span>{% endif %}</td><td>{{ item.total_count }}</td><td>{{ item.sent_count }}</td><td>{{ item.failed_count }}</td><td>{{ item.skipped_count }}</td><td>{{ item.created_at[:19] }}</td></tr>{% else %}<tr><td colspan="9" class="empty">还没有 DM 批次</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}

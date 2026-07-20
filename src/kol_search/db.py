@@ -148,6 +148,21 @@ CREATE TABLE IF NOT EXISTS brand_profile (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS x_sender_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    x_handle TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    sender_type TEXT NOT NULL,
+    send_method TEXT NOT NULL,
+    opencli_profile TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    comment_auto_publish INTEGER NOT NULL DEFAULT 0,
+    daily_comment_limit INTEGER NOT NULL DEFAULT 10,
+    daily_dm_limit INTEGER NOT NULL DEFAULT 10,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS post_observations (
     run_id INTEGER NOT NULL,
     post_id TEXT NOT NULL,
@@ -185,6 +200,44 @@ CREATE TABLE IF NOT EXISTS reply_opportunities (
 );
 CREATE INDEX IF NOT EXISTS idx_reply_opportunities_queue
 ON reply_opportunities(status, score DESC, expires_at);
+
+CREATE TABLE IF NOT EXISTS dm_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_account_id INTEGER NOT NULL,
+    template_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    total_count INTEGER NOT NULL DEFAULT 0,
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    cancelled_at TEXT,
+    FOREIGN KEY (sender_account_id) REFERENCES x_sender_accounts(id)
+);
+
+CREATE TABLE IF NOT EXISTS dm_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id INTEGER NOT NULL,
+    account_id TEXT NOT NULL,
+    recipient_x_user_id TEXT NOT NULL,
+    recipient_handle TEXT NOT NULL,
+    rendered_text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempted_at TEXT,
+    sent_at TEXT,
+    provider TEXT,
+    provider_receipt TEXT,
+    sanitized_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(batch_id, account_id),
+    FOREIGN KEY (batch_id) REFERENCES dm_batches(id),
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_dm_messages_batch_status
+ON dm_messages(batch_id, status, id);
 
 CREATE TABLE IF NOT EXISTS reply_outcome_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -425,6 +478,21 @@ EDGE_COLUMNS: dict[str, str] = {
     "last_seen_at": "TEXT",
 }
 
+REPLY_COLUMNS: dict[str, str] = {
+    "sender_account_id": "INTEGER",
+    "comment_style": "TEXT NOT NULL DEFAULT 'brand'",
+    "publish_mode": "TEXT NOT NULL DEFAULT 'review'",
+    "campaign_goal": "TEXT NOT NULL DEFAULT ''",
+    "suitable": "INTEGER",
+    "suitability_reason": "TEXT",
+    "validation_status": "TEXT NOT NULL DEFAULT 'pending'",
+    "validation_reason": "TEXT",
+    "attempted_at": "TEXT",
+    "published_at": "TEXT",
+    "send_backend": "TEXT",
+    "sanitized_error": "TEXT",
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -492,6 +560,14 @@ class Store:
                     connection.execute(
                         f"ALTER TABLE discovery_edges ADD COLUMN {name} {definition}"
                     )
+            reply_existing = {
+                row[1] for row in connection.execute("PRAGMA table_info(reply_opportunities)")
+            }
+            for name, definition in REPLY_COLUMNS.items():
+                if name not in reply_existing:
+                    connection.execute(
+                        f"ALTER TABLE reply_opportunities ADD COLUMN {name} {definition}"
+                    )
             connection.execute(
                 "UPDATE runs SET created_at=COALESCE(created_at, started_at, ?) WHERE created_at IS NULL",
                 (utc_now(),),
@@ -510,6 +586,10 @@ class Store:
             )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)",
+                (utc_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)",
                 (utc_now(),),
             )
 
@@ -1099,6 +1179,7 @@ class Store:
             value["handles"] = [dict(item) for item in connection.execute(
                 "SELECT * FROM account_handles WHERE account_id=? ORDER BY last_seen_at DESC", (account_id,)
             ).fetchall()]
+            value["outreach"] = self.account_outreach_history(account_id)
         return value
 
     def contacts_for_accounts(self, account_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -1347,6 +1428,609 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def save_x_sender(
+        self,
+        *,
+        label: str,
+        x_handle: str,
+        sender_type: str,
+        send_method: str,
+        opencli_profile: str | None = None,
+        enabled: bool = True,
+        comment_auto_publish: bool = False,
+        daily_comment_limit: int = 10,
+        daily_dm_limit: int = 10,
+        sender_id: int | None = None,
+    ) -> int:
+        allowed_types = {"brand", "founder", "employee", "creator_partner", "community"}
+        allowed_methods = {"opencli_reply", "official_x_dm", "mock", "disabled"}
+        handle = x_handle.strip().lstrip("@")
+        if not label.strip() or not handle:
+            raise ValueError("Sender label and X handle are required")
+        if sender_type not in allowed_types or send_method not in allowed_methods:
+            raise ValueError("Invalid sender type or send method")
+        if send_method == "opencli_reply" and not (opencli_profile or "").strip():
+            raise ValueError("OpenCLI profile is required for OpenCLI senders")
+        now = utc_now()
+        with self.connection() as connection:
+            if sender_id is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO x_sender_accounts(
+                        label, x_handle, sender_type, send_method, opencli_profile,
+                        enabled, comment_auto_publish, daily_comment_limit,
+                        daily_dm_limit, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        label.strip(), handle, sender_type, send_method,
+                        (opencli_profile or "").strip() or None, int(enabled),
+                        int(comment_auto_publish), max(0, daily_comment_limit),
+                        max(0, daily_dm_limit), now, now,
+                    ),
+                )
+                return int(cursor.lastrowid)
+            cursor = connection.execute(
+                """
+                UPDATE x_sender_accounts SET label=?, x_handle=?, sender_type=?,
+                    send_method=?, opencli_profile=?, enabled=?, comment_auto_publish=?,
+                    daily_comment_limit=?, daily_dm_limit=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    label.strip(), handle, sender_type, send_method,
+                    (opencli_profile or "").strip() or None, int(enabled),
+                    int(comment_auto_publish), max(0, daily_comment_limit),
+                    max(0, daily_dm_limit), now, sender_id,
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(sender_id)
+            return sender_id
+
+    def list_x_senders(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM x_sender_accounts"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY enabled DESC, label COLLATE NOCASE"
+        with self.connection() as connection:
+            rows = connection.execute(sql).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_x_sender(self, sender_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM x_sender_accounts WHERE id=?", (sender_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def _refresh_dm_batch_counts(connection: sqlite3.Connection, batch_id: int) -> None:
+        counts = connection.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status='sent'
+                             AND COALESCE(provider, '') NOT IN ('dry_run', 'mock')
+                            THEN 1 ELSE 0 END) AS sent,
+                   SUM(CASE WHEN status IN ('failed', 'confirmation_required') THEN 1 ELSE 0 END) AS failed,
+                   SUM(CASE WHEN status='skipped'
+                                  OR (status='sent' AND provider IN ('dry_run', 'mock'))
+                            THEN 1 ELSE 0 END) AS skipped,
+                   SUM(CASE WHEN status IN ('pending', 'sending') THEN 1 ELSE 0 END) AS active
+            FROM dm_messages WHERE batch_id=?
+            """,
+            (batch_id,),
+        ).fetchone()
+        completed_at = utc_now() if counts["active"] == 0 else None
+        connection.execute(
+            """
+            UPDATE dm_batches SET total_count=?, sent_count=?, failed_count=?, skipped_count=?,
+                status=CASE WHEN ? IS NOT NULL AND status='running' THEN 'completed' ELSE status END,
+                completed_at=CASE WHEN ? IS NOT NULL AND status='running' THEN ? ELSE completed_at END
+            WHERE id=?
+            """,
+            (
+                counts["total"] or 0, counts["sent"] or 0, counts["failed"] or 0,
+                counts["skipped"] or 0, completed_at, completed_at, completed_at, batch_id,
+            ),
+        )
+
+    def create_dm_batch(
+        self,
+        *,
+        sender_account_id: int,
+        template_key: str,
+        messages: list[dict[str, str]],
+    ) -> int:
+        sender = self.get_x_sender(sender_account_id)
+        if not sender or not sender["enabled"]:
+            raise ValueError("An enabled sender account is required")
+        unique: dict[str, dict[str, str]] = {}
+        for message in messages:
+            unique.setdefault(str(message["account_id"]), message)
+        if not unique:
+            raise ValueError("At least one recipient is required")
+        now = utc_now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO dm_batches(sender_account_id, template_key, status, total_count, created_at)
+                VALUES(?, ?, 'ready', ?, ?)
+                """,
+                (sender_account_id, template_key, len(unique), now),
+            )
+            batch_id = int(cursor.lastrowid)
+            connection.executemany(
+                """
+                INSERT INTO dm_messages(
+                    batch_id, account_id, recipient_x_user_id, recipient_handle,
+                    rendered_text, status, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                [
+                    (
+                        batch_id, value["account_id"], value["recipient_x_user_id"],
+                        value["recipient_handle"], value["rendered_text"], now, now,
+                    )
+                    for value in unique.values()
+                ],
+            )
+        return batch_id
+
+    def list_dm_batches(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT b.*, s.label AS sender_label, s.x_handle AS sender_handle,
+                       s.send_method
+                FROM dm_batches b JOIN x_sender_accounts s ON s.id=b.sender_account_id
+                ORDER BY b.id DESC LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_dm_batch(self, batch_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT b.*, s.label AS sender_label, s.x_handle AS sender_handle,
+                       s.send_method, s.daily_dm_limit, s.enabled AS sender_enabled
+                FROM dm_batches b JOIN x_sender_accounts s ON s.id=b.sender_account_id
+                WHERE b.id=?
+                """,
+                (batch_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_dm_messages(self, batch_id: int) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.*, a.name, a.description
+                FROM dm_messages m JOIN accounts a ON a.id=m.account_id
+                WHERE m.batch_id=? ORDER BY m.id
+                """,
+                (batch_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def remove_dm_message(self, batch_id: int, message_id: int) -> None:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "DELETE FROM dm_messages WHERE id=? AND batch_id=? AND status='pending'",
+                (message_id, batch_id),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("Only pending recipients can be removed")
+            self._refresh_dm_batch_counts(connection, batch_id)
+
+    def set_dm_batch_status(self, batch_id: int, action: str) -> None:
+        transitions = {
+            "start": ({"ready", "paused"}, "running"),
+            "resume": ({"paused"}, "running"),
+            "pause": ({"running"}, "paused"),
+            "cancel": ({"ready", "running", "paused"}, "cancelled"),
+        }
+        if action not in transitions:
+            raise ValueError("Invalid batch action")
+        allowed, target = transitions[action]
+        now = utc_now()
+        with self.connection() as connection:
+            row = connection.execute("SELECT status FROM dm_batches WHERE id=?", (batch_id,)).fetchone()
+            if not row:
+                raise KeyError(batch_id)
+            if row["status"] not in allowed:
+                raise ValueError(f"Cannot {action} batch in {row['status']} state")
+            connection.execute(
+                """
+                UPDATE dm_batches SET status=?,
+                    started_at=CASE WHEN ?='running' THEN COALESCE(started_at, ?) ELSE started_at END,
+                    cancelled_at=CASE WHEN ?='cancelled' THEN ? ELSE cancelled_at END
+                WHERE id=?
+                """,
+                (target, target, now, target, now, batch_id),
+            )
+            if target == "cancelled":
+                connection.execute(
+                    "UPDATE dm_messages SET status='skipped', updated_at=? WHERE batch_id=? AND status='pending'",
+                    (now, batch_id),
+                )
+            self._refresh_dm_batch_counts(connection, batch_id)
+
+    def claim_next_dm_message(self, *, dm_window_days: int = 30) -> dict[str, Any] | None:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT m.*, b.sender_account_id, b.template_key,
+                       s.x_handle AS sender_handle, s.send_method,
+                       s.daily_dm_limit, s.enabled AS sender_enabled
+                FROM dm_messages m
+                JOIN dm_batches b ON b.id=m.batch_id
+                JOIN x_sender_accounts s ON s.id=b.sender_account_id
+                WHERE b.status='running' AND m.status='pending'
+                ORDER BY b.id, m.id LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                connection.commit()
+                return None
+            now = utc_now()
+            if row["send_method"] != "mock":
+                daily = connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM dm_messages m
+                    JOIN dm_batches b ON b.id=m.batch_id
+                    WHERE b.sender_account_id=?
+                      AND m.status IN ('sending', 'sent', 'confirmation_required')
+                      AND COALESCE(m.provider, '') NOT IN ('dry_run', 'mock')
+                      AND date(COALESCE(m.sent_at, m.attempted_at))=date('now')
+                    """,
+                    (row["sender_account_id"],),
+                ).fetchone()
+                block_reason = self._dm_block_reason_in_connection(
+                    connection,
+                    str(row["account_id"]),
+                    str(row["template_key"]),
+                    window_days=dm_window_days,
+                    exclude_dm_message_id=int(row["id"]),
+                )
+                if int(daily["count"] or 0) >= int(row["daily_dm_limit"]):
+                    block_reason = "Sender daily DM limit reached"
+                if block_reason:
+                    connection.execute(
+                        """
+                        UPDATE dm_messages SET status='skipped', provider='guard',
+                            attempted_at=?, sanitized_error=?, updated_at=? WHERE id=?
+                        """,
+                        (now, block_reason, now, row["id"]),
+                    )
+                    self._refresh_dm_batch_counts(connection, int(row["batch_id"]))
+                    connection.commit()
+                    result = dict(row)
+                    result.update(status="skipped", attempted_at=now, provider="guard")
+                    return result
+            connection.execute(
+                "UPDATE dm_messages SET status='sending', attempted_at=?, updated_at=? WHERE id=?",
+                (now, now, row["id"]),
+            )
+            connection.commit()
+            result = dict(row)
+            result["status"] = "sending"
+            result["attempted_at"] = now
+            return result
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def interrupt_sending_dm_messages(self) -> int:
+        now = utc_now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE dm_messages SET status='confirmation_required',
+                    sanitized_error='Worker stopped during send; verify manually and do not retry',
+                    updated_at=? WHERE status='sending'
+                """,
+                (now,),
+            )
+            batch_ids = [
+                row["batch_id"]
+                for row in connection.execute(
+                    "SELECT DISTINCT batch_id FROM dm_messages WHERE status='confirmation_required'"
+                ).fetchall()
+            ]
+            for batch_id in batch_ids:
+                self._refresh_dm_batch_counts(connection, int(batch_id))
+        return cursor.rowcount
+
+    def finish_dm_message(
+        self,
+        message_id: int,
+        *,
+        status: str,
+        provider: str,
+        provider_receipt: str | None = None,
+        sanitized_error: str | None = None,
+    ) -> None:
+        if status not in {"sent", "failed", "skipped", "confirmation_required"}:
+            raise ValueError("Invalid DM result status")
+        now = utc_now()
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT batch_id FROM dm_messages WHERE id=?", (message_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(message_id)
+            connection.execute(
+                """
+                UPDATE dm_messages SET status=?, provider=?, provider_receipt=?,
+                    sanitized_error=?, sent_at=CASE WHEN ?='sent' THEN ? ELSE sent_at END,
+                    updated_at=? WHERE id=?
+                """,
+                (
+                    status, provider, provider_receipt, sanitized_error,
+                    status, now, now, message_id,
+                ),
+            )
+            self._refresh_dm_batch_counts(connection, int(row["batch_id"]))
+
+    @staticmethod
+    def _dm_block_reason_in_connection(
+        connection: sqlite3.Connection,
+        account_id: str,
+        template_key: str,
+        *,
+        window_days: int,
+        exclude_dm_message_id: int | None,
+    ) -> str | None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, window_days))).isoformat()
+        active = connection.execute(
+            """
+            SELECT id FROM dm_messages
+            WHERE account_id=? AND id!=COALESCE(?, -1)
+              AND status IN ('sending', 'confirmation_required')
+              AND COALESCE(provider, '') NOT IN ('dry_run', 'mock')
+            LIMIT 1
+            """,
+            (account_id, exclude_dm_message_id),
+        ).fetchone()
+        if active:
+            return "KOL already has active DM outreach"
+        active_comment = connection.execute(
+            """
+            SELECT id FROM reply_opportunities
+            WHERE account_id=? AND status IN ('publishing', 'confirmation_required')
+              AND COALESCE(send_backend, '')!='mock'
+            LIMIT 1
+            """,
+            (account_id,),
+        ).fetchone()
+        if active_comment:
+            return "KOL already has active comment outreach"
+        recent = connection.execute(
+            """
+            SELECT m.id FROM dm_messages m
+            JOIN dm_batches b ON b.id=m.batch_id
+            WHERE m.account_id=? AND m.id!=COALESCE(?, -1)
+              AND b.template_key=?
+              AND m.status IN ('sent', 'confirmation_required')
+              AND COALESCE(m.provider, '') NOT IN ('dry_run', 'mock')
+              AND COALESCE(m.sent_at, m.attempted_at)>=?
+            LIMIT 1
+            """,
+            (account_id, exclude_dm_message_id, template_key, cutoff),
+        ).fetchone()
+        return "Same DM template was already sent to this KOL recently" if recent else None
+
+    def dm_block_reason(
+        self,
+        account_id: str,
+        *,
+        template_key: str,
+        window_days: int = 30,
+        exclude_dm_message_id: int | None = None,
+    ) -> str | None:
+        with self.connection() as connection:
+            return self._dm_block_reason_in_connection(
+                connection,
+                account_id,
+                template_key,
+                window_days=window_days,
+                exclude_dm_message_id=exclude_dm_message_id,
+            )
+
+    @staticmethod
+    def _comment_block_reason_in_connection(
+        connection: sqlite3.Connection,
+        account_id: str,
+        *,
+        window_days: int,
+        exclude_reply_id: int | None,
+    ) -> str | None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, window_days))).isoformat()
+        active_dm = connection.execute(
+            """
+            SELECT id FROM dm_messages
+            WHERE account_id=? AND status IN ('sending', 'confirmation_required')
+              AND COALESCE(provider, '') NOT IN ('dry_run', 'mock')
+            LIMIT 1
+            """,
+            (account_id,),
+        ).fetchone()
+        if active_dm:
+            return "KOL already has active DM outreach"
+        recent_comment = connection.execute(
+            """
+            SELECT id FROM reply_opportunities
+            WHERE account_id=? AND id!=COALESCE(?, -1)
+              AND status IN ('publishing', 'replied', 'responded', 'confirmation_required')
+              AND COALESCE(send_backend, '')!='mock'
+              AND COALESCE(published_at, attempted_at, replied_at)>=?
+            LIMIT 1
+            """,
+            (account_id, exclude_reply_id, cutoff),
+        ).fetchone()
+        return "KOL already has recent promotional comment outreach" if recent_comment else None
+
+    def comment_block_reason(
+        self,
+        account_id: str,
+        *,
+        window_days: int = 7,
+        exclude_reply_id: int | None = None,
+    ) -> str | None:
+        with self.connection() as connection:
+            return self._comment_block_reason_in_connection(
+                connection,
+                account_id,
+                window_days=window_days,
+                exclude_reply_id=exclude_reply_id,
+            )
+
+    def cross_channel_outreach_warning(
+        self, account_id: str, *, target_channel: str, window_days: int = 30
+    ) -> str | None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, window_days))).isoformat()
+        with self.connection() as connection:
+            if target_channel == "dm":
+                row = connection.execute(
+                    """
+                    SELECT id FROM reply_opportunities
+                    WHERE account_id=? AND status IN ('replied', 'responded', 'confirmation_required')
+                      AND COALESCE(send_backend, '')!='mock'
+                      AND COALESCE(published_at, attempted_at, replied_at)>=? LIMIT 1
+                    """,
+                    (account_id, cutoff),
+                ).fetchone()
+                return "Warning: this KOL has recent Comment outreach" if row else None
+            row = connection.execute(
+                """
+                SELECT id FROM dm_messages
+                WHERE account_id=? AND status IN ('sent', 'confirmation_required')
+                  AND COALESCE(provider, '') NOT IN ('dry_run', 'mock')
+                  AND COALESCE(sent_at, attempted_at)>=? LIMIT 1
+                """,
+                (account_id, cutoff),
+            ).fetchone()
+        return "Warning: this KOL has recent DM outreach" if row else None
+
+    def claim_reply_for_publish(
+        self,
+        opportunity_id: int,
+        *,
+        sender_id: int,
+        backend: str,
+        daily_limit: int,
+        comment_window_days: int = 7,
+    ) -> dict[str, Any]:
+        """Atomically reserve one validated reply immediately before the external write."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT ro.*, p.text, p.url AS post_url, s.enabled,
+                       s.x_handle AS sender_handle, s.sender_type,
+                       s.send_method, s.opencli_profile
+                FROM reply_opportunities ro
+                JOIN posts p ON p.id=ro.post_id
+                JOIN x_sender_accounts s ON s.id=ro.sender_account_id
+                WHERE ro.id=? AND s.id=?
+                """,
+                (opportunity_id, sender_id),
+            ).fetchone()
+            if not row:
+                raise KeyError(opportunity_id)
+            if row["status"] != "validated":
+                raise ValueError("Reply is not validated or is already being published")
+            if not row["enabled"]:
+                raise ValueError("Selected sender is disabled")
+            block = self._comment_block_reason_in_connection(
+                connection,
+                str(row["account_id"]),
+                window_days=comment_window_days,
+                exclude_reply_id=opportunity_id,
+            )
+            if block:
+                raise ValueError(block)
+            if backend != "mock":
+                daily = connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM reply_opportunities
+                    WHERE sender_account_id=?
+                      AND status IN ('publishing', 'replied', 'responded', 'confirmation_required')
+                      AND COALESCE(send_backend, '')!='mock'
+                      AND date(COALESCE(published_at, attempted_at, replied_at))=date('now')
+                    """,
+                    (sender_id,),
+                ).fetchone()
+                if int(daily["count"] or 0) >= max(0, daily_limit):
+                    raise ValueError("Sender daily comment limit reached")
+            now = utc_now()
+            cursor = connection.execute(
+                """
+                UPDATE reply_opportunities
+                SET status='publishing', attempted_at=?, send_backend=?
+                WHERE id=? AND status='validated'
+                """,
+                (now, backend, opportunity_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Reply could not be reserved for publishing")
+            connection.commit()
+            value = dict(row)
+            value.update(status="publishing", attempted_at=now, send_backend=backend)
+            return value
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def interrupt_publishing_replies(self) -> int:
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE reply_opportunities
+                SET status='confirmation_required',
+                    sanitized_error='Application stopped during publish; verify on X and do not retry'
+                WHERE status='publishing'
+                """
+            )
+        return cursor.rowcount
+
+    def account_outreach_history(self, account_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT 'dm' AS channel, m.id, m.status, m.rendered_text AS text,
+                       m.attempted_at, m.sent_at AS completed_at, m.provider_receipt AS result,
+                       s.label AS sender_label, s.x_handle AS sender_handle,
+                       b.template_key AS style, m.provider, m.sanitized_error,
+                       COALESCE(m.sent_at, m.attempted_at, m.created_at) AS sort_at
+                FROM dm_messages m JOIN dm_batches b ON b.id=m.batch_id
+                JOIN x_sender_accounts s ON s.id=b.sender_account_id
+                WHERE m.account_id=?
+                UNION ALL
+                SELECT 'comment', ro.id, ro.status, ro.draft,
+                       ro.attempted_at, COALESCE(ro.published_at, ro.replied_at), ro.reply_url,
+                       s.label, s.x_handle, ro.comment_style, ro.send_backend,
+                       ro.sanitized_error,
+                       COALESCE(ro.published_at, ro.attempted_at, ro.replied_at, ro.first_seen_at)
+                FROM reply_opportunities ro
+                LEFT JOIN x_sender_accounts s ON s.id=ro.sender_account_id
+                WHERE ro.account_id=?
+                ORDER BY sort_at DESC LIMIT ?
+                """,
+                (account_id, account_id, max(1, min(limit, 100))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_brand_profile(self) -> dict[str, Any]:
         with self.connection() as connection:
             row = connection.execute("SELECT * FROM brand_profile WHERE id=1").fetchone()
@@ -1482,6 +2166,15 @@ class Store:
         draft_source: str,
         expires_at: str,
         observed_at: str | None = None,
+        sender_account_id: int | None = None,
+        comment_style: str = "brand",
+        publish_mode: str = "review",
+        campaign_goal: str = "",
+        suitable: bool | None = None,
+        suitability_reason: str | None = None,
+        validation_status: str = "pending",
+        validation_reason: str | None = None,
+        initial_status: str = "pending",
     ) -> int:
         now = observed_at or utc_now()
         with self.connection() as connection:
@@ -1490,23 +2183,61 @@ class Store:
                 INSERT INTO reply_opportunities(
                     post_id, account_id, score, status, language, score_json,
                     reasons_json, draft, draft_source, expires_at, first_seen_at,
-                    last_scored_at
-                ) VALUES(?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_scored_at, sender_account_id, comment_style, publish_mode,
+                    campaign_goal, suitable, suitability_reason, validation_status,
+                    validation_reason
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     account_id=excluded.account_id, score=excluded.score,
                     language=excluded.language, score_json=excluded.score_json,
                     reasons_json=excluded.reasons_json,
                     draft=CASE WHEN reply_opportunities.manually_edited=1
+                                    OR reply_opportunities.status IN (
+                                        'publishing', 'replied', 'responded', 'confirmation_required'
+                                    )
                                THEN reply_opportunities.draft ELSE excluded.draft END,
                     draft_source=CASE WHEN reply_opportunities.manually_edited=1
+                                           OR reply_opportunities.status IN (
+                                               'publishing', 'replied', 'responded', 'confirmation_required'
+                                           )
                                       THEN reply_opportunities.draft_source
                                       ELSE excluded.draft_source END,
                     expires_at=excluded.expires_at,
-                    last_scored_at=excluded.last_scored_at
+                    last_scored_at=excluded.last_scored_at,
+                    sender_account_id=CASE WHEN reply_opportunities.status IN (
+                                                'publishing', 'replied', 'responded', 'confirmation_required'
+                                            )
+                                           THEN reply_opportunities.sender_account_id
+                                           ELSE COALESCE(reply_opportunities.sender_account_id, excluded.sender_account_id)
+                                      END,
+                    comment_style=CASE WHEN reply_opportunities.status IN (
+                                           'publishing', 'replied', 'responded', 'confirmation_required'
+                                       ) THEN reply_opportunities.comment_style ELSE excluded.comment_style END,
+                    publish_mode=CASE WHEN reply_opportunities.status IN (
+                                          'publishing', 'replied', 'responded', 'confirmation_required'
+                                      ) THEN reply_opportunities.publish_mode ELSE excluded.publish_mode END,
+                    campaign_goal=CASE WHEN reply_opportunities.status IN (
+                                           'publishing', 'replied', 'responded', 'confirmation_required'
+                                       ) THEN reply_opportunities.campaign_goal ELSE excluded.campaign_goal END,
+                    suitable=CASE WHEN reply_opportunities.status IN (
+                                      'publishing', 'replied', 'responded', 'confirmation_required'
+                                  ) THEN reply_opportunities.suitable ELSE excluded.suitable END,
+                    suitability_reason=CASE WHEN reply_opportunities.status IN (
+                                                'publishing', 'replied', 'responded', 'confirmation_required'
+                                            ) THEN reply_opportunities.suitability_reason ELSE excluded.suitability_reason END,
+                    validation_status=CASE WHEN reply_opportunities.status IN (
+                                               'publishing', 'replied', 'responded', 'confirmation_required'
+                                           ) THEN reply_opportunities.validation_status ELSE excluded.validation_status END,
+                    validation_reason=CASE WHEN reply_opportunities.status IN (
+                                               'publishing', 'replied', 'responded', 'confirmation_required'
+                                           ) THEN reply_opportunities.validation_reason ELSE excluded.validation_reason END
                 """,
                 (
-                    post_id, account_id, score, language, _json(score_payload),
+                    post_id, account_id, score, initial_status, language, _json(score_payload),
                     _json(reasons), draft, draft_source, expires_at, now, now,
+                    sender_account_id, comment_style, publish_mode, campaign_goal,
+                    None if suitable is None else int(suitable), suitability_reason,
+                    validation_status, validation_reason,
                 ),
             )
             row = connection.execute(
@@ -1549,10 +2280,12 @@ class Store:
         sql = """
             SELECT ro.*, p.text, p.created_at, p.url AS post_url, p.like_count,
                    p.retweet_count, p.reply_count, p.quote_count, p.view_count,
-                   a.username, a.name, a.followers_count, a.profile_image_url
+                   a.username, a.name, a.followers_count, a.profile_image_url,
+                   s.label AS sender_label, s.x_handle AS sender_handle
             FROM reply_opportunities ro
             JOIN posts p ON p.id=ro.post_id
             LEFT JOIN accounts a ON a.id=ro.account_id
+            LEFT JOIN x_sender_accounts s ON s.id=ro.sender_account_id
             WHERE 1=1
         """
         params: list[Any] = []
@@ -1591,9 +2324,21 @@ class Store:
         status: str | None = None,
         draft: str | None = None,
         reply_url: str | None = None,
+        sender_account_id: int | None = None,
+        comment_style: str | None = None,
+        publish_mode: str | None = None,
+        campaign_goal: str | None = None,
+        suitable: bool | None = None,
+        suitability_reason: str | None = None,
+        validation_status: str | None = None,
+        validation_reason: str | None = None,
+        send_backend: str | None = None,
+        sanitized_error: str | None = None,
     ) -> None:
         allowed = {
-            "pending", "replied", "confirmation_required", "skipped", "expired", "responded"
+            "pending", "draft", "validated", "publishing", "review_required",
+            "unsuitable", "replied", "confirmation_required", "failed", "skipped",
+            "expired", "responded"
         }
         if status is not None and status not in allowed:
             raise ValueError("Invalid reply opportunity status")
@@ -1614,6 +2359,8 @@ class Store:
                 "replied_at": existing["replied_at"],
                 "next_check_at": existing["next_check_at"],
             }
+            if draft is not None and existing["status"] == "validated" and status is None:
+                values["status"] = "draft"
             if status == "replied" and not values["replied_at"]:
                 values["replied_at"] = now.isoformat()
                 values["next_check_at"] = (now + timedelta(hours=1)).isoformat()
@@ -1623,13 +2370,27 @@ class Store:
                 """
                 UPDATE reply_opportunities SET
                     status=?, draft=?, manually_edited=?, reply_url=?,
-                    replied_at=?, next_check_at=?
+                    replied_at=?, next_check_at=?, sender_account_id=COALESCE(?, sender_account_id),
+                    comment_style=COALESCE(?, comment_style), publish_mode=COALESCE(?, publish_mode),
+                    campaign_goal=COALESCE(?, campaign_goal), suitable=COALESCE(?, suitable),
+                    suitability_reason=COALESCE(?, suitability_reason),
+                    validation_status=COALESCE(?, validation_status),
+                    validation_reason=COALESCE(?, validation_reason),
+                    attempted_at=CASE WHEN ?='publishing' THEN ? ELSE attempted_at END,
+                    published_at=CASE WHEN ?='replied' THEN ? ELSE published_at END,
+                    send_backend=COALESCE(?, send_backend),
+                    sanitized_error=COALESCE(?, sanitized_error)
                 WHERE id=?
                 """,
                 (
                     values["status"], values["draft"], values["manually_edited"],
                     values["reply_url"], values["replied_at"],
-                    values["next_check_at"], opportunity_id,
+                    values["next_check_at"], sender_account_id, comment_style,
+                    publish_mode, campaign_goal,
+                    None if suitable is None else int(suitable), suitability_reason,
+                    validation_status, validation_reason,
+                    values["status"], now.isoformat(), values["status"], now.isoformat(),
+                    send_backend, sanitized_error, opportunity_id,
                 ),
             )
 

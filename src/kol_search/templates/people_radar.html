@@ -5,14 +5,19 @@
   <div><p class="eyebrow">PEOPLE RADAR</p><h1>今日回复机会</h1><p>优先处理仍在 24 小时窗口内、且更可能形成持续互动的讨论。</p></div>
   <form action="/signal-scans" method="post" class="scan-control">
     <select name="backend">{% for backend in backends %}<option value="{{ backend.name }}" {% if backend.name==default_backend %}selected{% endif %} {% if not backend.ready %}disabled{% endif %}>{{ backend.label }}</option>{% endfor %}</select>
+    <select name="sender_account_id" required data-scan-sender><option value="">选择 X Sender</option>{% for sender in senders %}<option value="{{ sender.id }}" data-sender-handle="{{ sender.x_handle }}">{{ sender.label }} · @{{ sender.x_handle }}</option>{% endfor %}</select>
+    <select name="comment_style"><option value="brand">brand</option><option value="conversational">conversational</option></select>
+    <select name="publish_mode"><option value="review">review</option><option value="auto">auto</option></select>
+    <input name="campaign_goal" value="Introduce LaunchVibes only when relevant" aria-label="Campaign goal">
     {% if ai_ready %}<label class="check"><input type="checkbox" name="use_ai" value="true"> 模型增强</label>{% endif %}
     <button type="submit">立即扫描</button>
   </form>
 </section>
+{% if brand.x_handle %}<div class="notice warning" data-scan-identity-notice data-brand-handle="{{ brand.x_handle }}" hidden>生成使用的品牌身份：@{{ brand.x_handle }}；实际发布 sender：@<span data-selected-sender-handle></span>。请确认回复措辞符合实际 sender 身份。</div>{% endif %}
 {% if not brand.brand_name or not brand.x_handle %}<div class="notice warning">人物雷达需要品牌身份才能生成可用草稿。<a href="/settings/brand">完成品牌配置</a></div>{% endif %}
 <div class="workspace-meta"><span>{% if signal_enabled %}自动扫描：每 {{ signal_interval }} 分钟{% else %}自动扫描：关闭{% endif %}</span>{% if runs %}<span>最近任务：#{{ runs[0].id }} · {{ runs[0].status }}</span>{% endif %}</div>
 <form method="get" class="compact-filters">
-  <select name="status"><option value="pending" {% if status=='pending' %}selected{% endif %}>待处理</option><option value="confirmation_required" {% if status=='confirmation_required' %}selected{% endif %}>待确认</option><option value="replied" {% if status=='replied' %}selected{% endif %}>已回复</option><option value="responded" {% if status=='responded' %}selected{% endif %}>获得回应</option><option value="skipped" {% if status=='skipped' %}selected{% endif %}>已跳过</option><option value="expired" {% if status=='expired' %}selected{% endif %}>已过期</option><option value="all" {% if status=='all' %}selected{% endif %}>全部</option></select>
+  <select name="status"><option value="draft" {% if status=='draft' %}selected{% endif %}>草稿</option><option value="validated" {% if status=='validated' %}selected{% endif %}>已验证</option><option value="review_required" {% if status=='review_required' %}selected{% endif %}>需人工检查</option><option value="unsuitable" {% if status=='unsuitable' %}selected{% endif %}>不适合</option><option value="confirmation_required" {% if status=='confirmation_required' %}selected{% endif %}>待确认</option><option value="replied" {% if status=='replied' %}selected{% endif %}>已回复</option><option value="responded" {% if status=='responded' %}selected{% endif %}>获得回应</option><option value="failed" {% if status=='failed' %}selected{% endif %}>失败</option><option value="skipped" {% if status=='skipped' %}selected{% endif %}>已跳过</option><option value="expired" {% if status=='expired' %}selected{% endif %}>已过期</option><option value="all" {% if status=='all' %}selected{% endif %}>全部</option></select>
   <select name="language"><option value="all">全部语言</option><option value="zh" {% if language=='zh' %}selected{% endif %}>中文</option><option value="en" {% if language=='en' %}selected{% endif %}>英文</option></select>
   <button class="ghost">筛选</button>
 </form>
@@ -25,13 +30,32 @@
       <p class="source-post">{{ item.text }}</p>
       <div class="metric-line"><span>{{ item.like_count }} 赞</span><span>{{ item.retweet_count }} 转发</span><span>{{ item.reply_count }} 回复</span><span>{{ item.language }}</span><span>{{ item.created_at[:16]|replace('T', ' ') }}</span></div>
       <div class="reason-line">{% for reason in item.reasons %}<span>{{ reason }}</span>{% endfor %}</div>
+      <div class="workspace-meta">{% if item.sender_handle %}<span>Sender: @{{ item.sender_handle }}</span>{% endif %}<span>Style: {{ item.comment_style }}</span><span>Mode: {{ item.publish_mode }}</span><span>Suitability: {% if item.suitable is none %}not checked{% elif item.suitable %}yes{% else %}no{% endif %}{% if item.suitability_reason %} · {{ item.suitability_reason }}{% endif %}</span>{% if item.validation_status %}<span>Validation: {{ item.validation_status }}{% if item.validation_reason %} · {{ item.validation_reason }}{% endif %}</span>{% endif %}</div>
+      {% if item.sender_handle %}<p class="field-note">此机会已绑定 @{{ item.sender_handle }}；后续扫描选择其他 sender 时不会自动替换。</p>{% endif %}
+      {% if brand.x_handle and item.sender_handle and brand.x_handle|lower != item.sender_handle|lower %}<div class="notice warning">生成使用的品牌身份：@{{ brand.x_handle }}；实际发布 sender：@{{ item.sender_handle }}。请确认回复措辞符合实际 sender 身份。</div>{% endif %}
+      {% if item.status in ['replied','responded'] %}<div class="notice success"><strong>Published{% if item.sender_handle %} by @{{ item.sender_handle }}{% endif %}</strong>{% if item.published_at or item.replied_at %}<div>Published at: {{ item.published_at or item.replied_at }}</div>{% endif %}{% if item.send_backend %}<div>Backend: {{ item.send_backend }}</div>{% endif %}{% if item.reply_url %}<a href="{{ item.reply_url }}" target="_blank" rel="noopener">View reply</a>{% endif %}</div>{% elif item.status == 'failed' %}<div class="notice danger"><strong>Failed</strong>{% if item.attempted_at %}<div>Attempted at: {{ item.attempted_at }}</div>{% endif %}{% if item.send_backend %}<div>Backend: {{ item.send_backend }}</div>{% endif %}{% if item.sanitized_error %}<div>{{ item.sanitized_error }}</div>{% endif %}</div>{% elif item.status == 'confirmation_required' %}<div class="notice warning"><strong>Confirmation required</strong><div>The publish result could not be confirmed. No automatic retry was performed.</div>{% if item.attempted_at %}<div>Attempted at: {{ item.attempted_at }}</div>{% endif %}{% if item.send_backend %}<div>Backend: {{ item.send_backend }}</div>{% endif %}{% if item.sanitized_error %}<div>{{ item.sanitized_error }}</div>{% endif %}</div>{% elif item.attempted_at or item.send_backend %}<div class="workspace-meta">{% if item.attempted_at %}<span>Attempted at: {{ item.attempted_at }}</span>{% endif %}{% if item.send_backend %}<span>Backend: {{ item.send_backend }}</span>{% endif %}</div>{% endif %}
       <form action="/reply-opportunities/{{ item.id }}" method="post" class="editor-form">
-        <label>回复草稿<textarea name="draft" rows="3">{{ item.draft }}</textarea></label>
-        <label>实际回复链接<input name="reply_url" value="{{ item.reply_url or '' }}" placeholder="https://x.com/your_brand/status/..."></label>
-        <div class="editor-actions"><a class="button ghost" href="{{ item.post_url }}" target="_blank" rel="noopener">打开原帖</a><button class="ghost" type="submit">保存草稿</button>{% if item.status == 'pending' and opencli_ready %}<button name="backend" value="opencli" formaction="/reply-opportunities/{{ item.id }}/publish" onclick="return confirm('确认通过当前登录的 X 账号发送这条回复？')">通过 OpenCLI 回复</button>{% endif %}{% if item.status in ['pending', 'confirmation_required'] %}<button name="status" value="replied">确认已回复</button><button class="ghost" name="status" value="skipped">跳过</button>{% elif item.status == 'skipped' %}<button class="ghost" name="status" value="pending">恢复待处理</button>{% endif %}</div>
+        <div class="form-grid"><label>发送账号<select name="sender_account_id" required><option value="">选择</option>{% for sender in senders %}<option value="{{ sender.id }}" {% if item.sender_account_id==sender.id %}selected{% endif %}>{{ sender.label }} · @{{ sender.x_handle }}</option>{% endfor %}</select></label><label>风格<select name="comment_style"><option value="brand" {% if item.comment_style=='brand' %}selected{% endif %}>brand</option><option value="conversational" {% if item.comment_style=='conversational' %}selected{% endif %}>conversational</option></select></label><label>发布模式<select name="publish_mode"><option value="review" {% if item.publish_mode=='review' %}selected{% endif %}>review</option><option value="auto" {% if item.publish_mode=='auto' %}selected{% endif %}>auto</option></select></label><label class="wide">Campaign goal<input name="campaign_goal" value="{{ item.campaign_goal }}"></label></div>
+        <label>{% if item.status in ['replied','responded','confirmation_required'] %}Exact published/attempted text{% else %}回复草稿{% endif %}<textarea name="draft" rows="3">{{ item.draft }}</textarea></label>
+        {% if item.reply_url %}<label>实际回复链接<input name="reply_url" value="{{ item.reply_url }}"></label>{% endif %}
+        <div class="editor-actions"><a class="button ghost" href="{{ item.post_url }}" target="_blank" rel="noopener">打开原帖</a><button class="ghost" type="submit">保存草稿</button>{% if item.status in ['draft','pending','review_required'] and item.suitable != 0 %}<button name="status" value="validated">验证{% if item.publish_mode=='auto' %}并按配置发布{% endif %}</button>{% endif %}{% if item.status == 'validated' %}<button formaction="/reply-opportunities/{{ item.id }}/publish" onclick="return confirm('确认使用所选 X Sender 发布？')">Publish</button>{% endif %}{% if item.status not in ['replied','responded','unsuitable'] %}<button class="ghost" name="status" value="skipped">跳过</button>{% endif %}</div>
       </form>
     </div>
   </article>
 {% else %}<div class="empty-state"><strong>当前没有符合条件的回复机会</strong><p>完成品牌配置后运行一次信号扫描。</p></div>{% endfor %}
 </section>
+{% if brand.x_handle %}<script>
+const scanSender = document.querySelector("[data-scan-sender]");
+const identityNotice = document.querySelector("[data-scan-identity-notice]");
+if (scanSender && identityNotice) {
+  const updateIdentityNotice = () => {
+    const handle = scanSender.selectedOptions[0]?.dataset.senderHandle || "";
+    const differs = handle && handle.toLowerCase() !== identityNotice.dataset.brandHandle.toLowerCase();
+    identityNotice.hidden = !differs;
+    identityNotice.querySelector("[data-selected-sender-handle]").textContent = handle;
+  };
+  scanSender.addEventListener("change", updateIdentityNotice);
+  updateIdentityNotice();
+}
+</script>{% endif %}
 {% endblock %}

@@ -226,6 +226,74 @@
   color: var(--muted);
 }
 
+.sender-create > .field-note {
+  display: block;
+  margin: -2px 0 20px;
+}
+
+.sender-form [readonly] {
+  background: #f0f2ec;
+  color: var(--muted);
+}
+
+.sender-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.sender-card > summary {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(0, 3fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 22px 24px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sender-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sender-identity strong,
+.sender-identity small {
+  display: block;
+}
+
+.sender-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.sender-summary > span:not(.status) {
+  background: #edf0e8;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.sender-edit-action {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.sender-edit {
+  border-top: 1px solid var(--line);
+  padding: 22px 24px 24px;
+}
+
+.sender-edit > .eyebrow {
+  margin: 0 0 16px;
+}
+
+.message-cell {
+  min-width: 320px;
+  max-width: 560px;
+  white-space: normal;
+}
+
 .settings-form {
   border-top: 1px solid var(--line);
   padding-top: 22px;
@@ -318,6 +386,15 @@
 }
 
 @media (max-width: 760px) {
+  .sender-card > summary {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .sender-edit-action {
+    justify-self: start;
+  }
+
   .settings-form .form-grid {
     grid-template-columns: 1fr;
   }

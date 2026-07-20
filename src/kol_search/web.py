@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import re
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -15,13 +16,17 @@ from fastapi.templating import Jinja2Templates
 
 from kol_search.db import Store
 from kol_search.jobs import JobWorker, WeeklyScheduler
-from kol_search.replies import ReplyPublisher
+from kol_search.outreach import (
+    DM_TEMPLATES,
+    official_dm_readiness,
+    render_dm_template,
+    validate_comment,
+    verify_opencli_sender,
+)
+from kol_search.replies import ReplyOpportunityError, publish_validated_comment
 from kol_search.settings import PROJECT_ROOT, Settings, get_settings
 from kol_search.twitter.base import TwitterBackendError
-from kol_search.twitter.reply import (
-    ReplyConfirmationRequiredError,
-    create_twitter_reply_client,
-)
+from kol_search.twitter.reply import ReplyConfirmationRequiredError
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -62,6 +67,30 @@ def _settings(request: Request) -> Settings:
 
 def _textarea_lines(value: str) -> list[str]:
     return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def _publish_reply(request: Request, opportunity_id: int) -> RedirectResponse:
+    store = _store(request)
+    try:
+        publish_validated_comment(store, _settings(request), opportunity_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="回复机会不存在") from exc
+    except ReplyConfirmationRequiredError:
+        return RedirectResponse(
+            url="/radar/people?status=confirmation_required&send=unconfirmed",
+            status_code=303,
+        )
+    except ReplyOpportunityError as exc:
+        store.update_reply_opportunity(
+            opportunity_id,
+            status="review_required",
+            validation_status="failed",
+            validation_reason=str(exc),
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except TwitterBackendError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return RedirectResponse(url="/radar/people?status=replied&send=ok", status_code=303)
 
 
 def _backends(settings: Settings) -> list[dict]:
@@ -159,10 +188,241 @@ def update_brand_settings(
     return RedirectResponse(url="/settings/brand?saved=1", status_code=303)
 
 
+@app.get("/settings/x-senders", response_class=HTMLResponse)
+def x_sender_settings(request: Request) -> HTMLResponse:
+    dm_ready, dm_reason = official_dm_readiness(_settings(request))
+    return templates.TemplateResponse(
+        request=request,
+        name="x_senders.html",
+        context={
+            "senders": _store(request).list_x_senders(),
+            "official_dm_ready": dm_ready,
+            "official_dm_reason": dm_reason,
+        },
+    )
+
+
+@app.post("/settings/x-senders")
+def save_x_sender(
+    request: Request,
+    label: Annotated[str, Form()],
+    x_handle: Annotated[str, Form()],
+    sender_type: Annotated[str, Form()],
+    send_method: Annotated[str, Form()],
+    opencli_profile: Annotated[str, Form()] = "",
+    sender_id: Annotated[int | None, Form()] = None,
+    enabled: Annotated[bool, Form()] = False,
+    comment_auto_publish: Annotated[bool, Form()] = False,
+    daily_comment_limit: Annotated[int, Form()] = 10,
+    daily_dm_limit: Annotated[int, Form()] = 10,
+) -> RedirectResponse:
+    try:
+        _store(request).save_x_sender(
+            sender_id=sender_id,
+            label=label,
+            x_handle=x_handle,
+            sender_type=sender_type,
+            send_method=send_method,
+            opencli_profile=opencli_profile,
+            enabled=enabled,
+            comment_auto_publish=comment_auto_publish,
+            daily_comment_limit=daily_comment_limit,
+            daily_dm_limit=daily_dm_limit,
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="X handle 已存在") from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url="/settings/x-senders?saved=1", status_code=303)
+
+
+@app.post("/settings/x-senders/{sender_id}/verify")
+def verify_x_sender(request: Request, sender_id: int) -> RedirectResponse:
+    sender = _store(request).get_x_sender(sender_id)
+    if not sender:
+        raise HTTPException(status_code=404, detail="发送账号不存在")
+    if sender["send_method"] != "opencli_reply":
+        raise HTTPException(status_code=422, detail="只有 OpenCLI 账号需要登录验证")
+    verified, reason = verify_opencli_sender(_settings(request), sender)
+    if not verified:
+        raise HTTPException(status_code=409, detail=reason)
+    return RedirectResponse(url=f"/settings/x-senders?verified={sender_id}", status_code=303)
+
+
+def _dm_preview_context(
+    request: Request,
+    account_ids: list[str],
+    template_key: str,
+    sender_account_id: int | None,
+) -> dict:
+    store = _store(request)
+    settings = _settings(request)
+    recipients = []
+    for account_id in dict.fromkeys(account_ids):
+        account = store.get_account(account_id)
+        if not account:
+            continue
+        recipients.append(
+            {
+                **account,
+                "rendered_text": render_dm_template(
+                    template_key, account, settings.launchvibes_url
+                ),
+                "block_reason": store.dm_block_reason(
+                    account_id,
+                    template_key=template_key,
+                    window_days=settings.outreach_dm_window_days,
+                ),
+                "warning": store.cross_channel_outreach_warning(
+                    account_id, target_channel="dm", window_days=settings.outreach_dm_window_days
+                ),
+            }
+        )
+    return {
+        "recipients": recipients,
+        "senders": store.list_x_senders(enabled_only=True),
+        "templates": DM_TEMPLATES,
+        "template_key": template_key,
+        "sender_account_id": sender_account_id,
+        "launchvibes_url": settings.launchvibes_url,
+    }
+
+
+@app.get("/outreach/dm", response_class=HTMLResponse)
+def dm_batches(request: Request) -> HTMLResponse:
+    ready, reason = official_dm_readiness(_settings(request))
+    return templates.TemplateResponse(
+        request=request,
+        name="dm_batches.html",
+        context={
+            "batches": _store(request).list_dm_batches(),
+            "official_dm_ready": ready,
+            "official_dm_reason": reason,
+        },
+    )
+
+
+@app.get("/outreach/dm/new", response_class=HTMLResponse)
+def new_dm_batch_empty(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="dm_batch.html",
+        context={
+            "batch": None,
+            "messages": [],
+            **_dm_preview_context(
+                request, [], "launchvibes_invitation", None
+            ),
+        },
+    )
+
+
+@app.post("/outreach/dm/new", response_class=HTMLResponse)
+def preview_dm_batch(
+    request: Request,
+    account_ids: Annotated[list[str], Form()],
+    template_key: Annotated[str, Form()] = "launchvibes_invitation",
+    sender_account_id: Annotated[int | None, Form()] = None,
+) -> HTMLResponse:
+    if template_key not in DM_TEMPLATES:
+        raise HTTPException(status_code=422, detail="未知 DM 模板")
+    return templates.TemplateResponse(
+        request=request,
+        name="dm_batch.html",
+        context={
+            "batch": None,
+            "messages": [],
+            **_dm_preview_context(
+                request, account_ids, template_key, sender_account_id
+            ),
+        },
+    )
+
+
+@app.post("/outreach/dm")
+def create_dm_batch(
+    request: Request,
+    account_ids: Annotated[list[str], Form()],
+    sender_account_id: Annotated[int, Form()],
+    template_key: Annotated[str, Form()],
+) -> RedirectResponse:
+    if template_key not in DM_TEMPLATES:
+        raise HTTPException(status_code=422, detail="未知 DM 模板")
+    settings = _settings(request)
+    messages = []
+    for account_id in dict.fromkeys(account_ids):
+        account = _store(request).get_account(account_id)
+        if not account:
+            continue
+        messages.append(
+            {
+                "account_id": account_id,
+                "recipient_x_user_id": account_id,
+                "recipient_handle": account["username"],
+                "rendered_text": render_dm_template(
+                    template_key, account, settings.launchvibes_url
+                ),
+            }
+        )
+    try:
+        batch_id = _store(request).create_dm_batch(
+            sender_account_id=sender_account_id,
+            template_key=template_key,
+            messages=messages,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/outreach/dm/{batch_id}", status_code=303)
+
+
+@app.get("/outreach/dm/{batch_id}", response_class=HTMLResponse)
+def dm_batch_detail(request: Request, batch_id: int) -> HTMLResponse:
+    batch = _store(request).get_dm_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="DM 批次不存在")
+    return templates.TemplateResponse(
+        request=request,
+        name="dm_batch.html",
+        context={
+            "batch": batch,
+            "messages": _store(request).list_dm_messages(batch_id),
+            "recipients": [],
+            "senders": [],
+            "templates": DM_TEMPLATES,
+            "template_key": batch["template_key"],
+            "sender_account_id": batch["sender_account_id"],
+            "launchvibes_url": _settings(request).launchvibes_url,
+        },
+    )
+
+
+@app.post("/outreach/dm/{batch_id}/messages/{message_id}/remove")
+def remove_dm_recipient(request: Request, batch_id: int, message_id: int) -> RedirectResponse:
+    try:
+        _store(request).remove_dm_message(batch_id, message_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/outreach/dm/{batch_id}", status_code=303)
+
+
+@app.post("/outreach/dm/{batch_id}/{action}")
+def change_dm_batch_status(request: Request, batch_id: int, action: str) -> RedirectResponse:
+    if action not in {"start", "pause", "resume", "cancel"}:
+        raise HTTPException(status_code=404, detail="未知批次操作")
+    try:
+        _store(request).set_dm_batch_status(batch_id, action)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="DM 批次不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    request.app.state.worker.notify()
+    return RedirectResponse(url=f"/outreach/dm/{batch_id}", status_code=303)
+
+
 @app.get("/radar/people", response_class=HTMLResponse)
 def people_radar(
     request: Request,
-    status: str = Query(default="pending"),
+    status: str = Query(default="all"),
     language: str = Query(default="all"),
 ) -> HTMLResponse:
     store = _store(request)
@@ -189,6 +449,7 @@ def people_radar(
             "ai_ready": bool(settings.openai_api_key),
             "signal_enabled": settings.enable_signal_scan,
             "signal_interval": settings.signal_interval_minutes,
+            "senders": store.list_x_senders(enabled_only=True),
         },
     )
 
@@ -200,6 +461,10 @@ def update_reply_opportunity(
     status: Annotated[str | None, Form()] = None,
     draft: Annotated[str | None, Form()] = None,
     reply_url: Annotated[str | None, Form()] = None,
+    sender_account_id: Annotated[int | None, Form()] = None,
+    comment_style: Annotated[str | None, Form()] = None,
+    publish_mode: Annotated[str | None, Form()] = None,
+    campaign_goal: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse:
     clean_url = (reply_url or "").strip() or None
     if status == "replied" and (
@@ -207,17 +472,65 @@ def update_reply_opportunity(
         or not re.match(r"^https://(?:x\.com|twitter\.com)/[^/]+/status/\d+", clean_url)
     ):
         raise HTTPException(status_code=422, detail="请填写有效的 X 回复链接")
+    store = _store(request)
+    opportunity = store.get_reply_opportunity(opportunity_id)
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="回复机会不存在")
+    final_status = status
+    validation_status = None
+    validation_reason = None
+    if status == "validated":
+        sender = store.get_x_sender(int(sender_account_id)) if sender_account_id else None
+        if not sender or not sender["enabled"]:
+            raise HTTPException(status_code=422, detail="请选择已启用的发送账号")
+        brand = store.get_brand_profile()
+        valid, validation_reason = validate_comment(
+            post_text=opportunity.get("text") or "",
+            draft=draft if draft is not None else opportunity.get("draft"),
+            suitable=opportunity.get("suitable") in {None, 1, True},
+            style=comment_style or opportunity.get("comment_style") or "brand",
+            sender_type=sender["sender_type"],
+            allowed_claims=brand.get("allowed_claims", []),
+            forbidden_terms=brand.get("forbidden_terms", []),
+        )
+        block = store.comment_block_reason(
+            opportunity["account_id"],
+            window_days=_settings(request).outreach_comment_window_days,
+            exclude_reply_id=opportunity_id,
+        )
+        if block:
+            valid, validation_reason = False, block
+        elif valid:
+            warning = store.cross_channel_outreach_warning(
+                opportunity["account_id"],
+                target_channel="comment",
+                window_days=_settings(request).outreach_dm_window_days,
+            )
+            if warning:
+                validation_reason = f"{validation_reason}; {warning}"
+        validation_status = "passed" if valid else "failed"
+        final_status = "validated" if valid else "review_required"
     try:
-        _store(request).update_reply_opportunity(
+        store.update_reply_opportunity(
             opportunity_id,
-            status=status,
+            status=final_status,
             draft=draft,
             reply_url=clean_url,
+            sender_account_id=sender_account_id,
+            comment_style=comment_style,
+            publish_mode=publish_mode,
+            campaign_goal=campaign_goal,
+            validation_status=validation_status,
+            validation_reason=validation_reason,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="回复机会不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if final_status == "validated" and publish_mode == "auto":
+        sender = store.get_x_sender(int(sender_account_id)) if sender_account_id else None
+        if sender and sender["comment_auto_publish"]:
+            return _publish_reply(request, opportunity_id)
     return RedirectResponse(url="/radar/people", status_code=303)
 
 
@@ -225,38 +538,8 @@ def update_reply_opportunity(
 def publish_reply_opportunity(
     request: Request,
     opportunity_id: int,
-    draft: Annotated[str, Form()],
-    backend: Annotated[str, Form()] = "opencli",
 ) -> RedirectResponse:
-    settings = _settings(request)
-    ready, reason = settings.backend_ready(backend)
-    if not ready:
-        raise HTTPException(status_code=503, detail=reason or "回复后端未就绪")
-    brand = _store(request).get_brand_profile()
-    actor_handle = (brand.get("x_handle") or "").strip().lstrip("@")
-    if not actor_handle:
-        raise HTTPException(status_code=422, detail="请先配置品牌 X handle")
-    try:
-        client = create_twitter_reply_client(backend, settings)
-    except TwitterBackendError as exc:
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
-    try:
-        ReplyPublisher(_store(request), client, actor_handle).publish(
-            opportunity_id,
-            text=draft,
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="回复机会不存在") from exc
-    except ReplyConfirmationRequiredError:
-        return RedirectResponse(
-            url="/radar/people?status=confirmation_required&send=unconfirmed",
-            status_code=303,
-        )
-    except (ValueError, TwitterBackendError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    finally:
-        client.close()
-    return RedirectResponse(url="/radar/people?status=replied&send=ok", status_code=303)
+    return _publish_reply(request, opportunity_id)
 
 
 @app.get("/radar/topics", response_class=HTMLResponse)
@@ -315,6 +598,10 @@ def create_signal_scan(
     request: Request,
     backend: Annotated[str, Form()] = "mock",
     use_ai: Annotated[bool, Form()] = False,
+    sender_account_id: Annotated[int | None, Form()] = None,
+    comment_style: Annotated[str, Form()] = "brand",
+    publish_mode: Annotated[str, Form()] = "review",
+    campaign_goal: Annotated[str, Form()] = "Introduce LaunchVibes only when relevant",
 ) -> RedirectResponse:
     settings = _settings(request)
     ready, reason = settings.backend_ready(backend)
@@ -325,6 +612,12 @@ def create_signal_scan(
         raise HTTPException(status_code=422, detail="请先完成品牌配置")
     if _store(request).has_active_run("signal_scan"):
         return RedirectResponse(url="/radar/people?active=1", status_code=303)
+    if sender_account_id:
+        sender = _store(request).get_x_sender(sender_account_id)
+        if not sender or not sender["enabled"]:
+            raise HTTPException(status_code=422, detail="请选择已启用的发送账号")
+    if comment_style not in {"brand", "conversational"} or publish_mode not in {"review", "auto"}:
+        raise HTTPException(status_code=422, detail="无效的评论模式")
     _store(request).create_run(
         query="X KOL and topic signal scan",
         backend=backend,
@@ -335,7 +628,14 @@ def create_signal_scan(
         result_limit=settings.signal_reply_limit + settings.signal_topic_limit,
         use_ai=use_ai and bool(settings.openai_api_key),
         model=settings.openai_model,
-        config={"manual": True, "interval_minutes": settings.signal_interval_minutes},
+        config={
+            "manual": True,
+            "interval_minutes": settings.signal_interval_minutes,
+            "sender_account_id": sender_account_id,
+            "comment_style": comment_style,
+            "publish_mode": publish_mode,
+            "campaign_goal": campaign_goal.strip(),
+        },
     )
     request.app.state.worker.notify()
     return RedirectResponse(url="/radar/people?started=1", status_code=303)
@@ -549,7 +849,22 @@ def account_detail(request: Request, account_id: str) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="account.html",
-        context={"account": account},
+        context={
+            "account": account,
+            "senders": _store(request).list_x_senders(enabled_only=True),
+            "outreach_warnings": list(dict.fromkeys(filter(None, (
+                _store(request).cross_channel_outreach_warning(
+                    account_id,
+                    target_channel="dm",
+                    window_days=_settings(request).outreach_dm_window_days,
+                ),
+                _store(request).cross_channel_outreach_warning(
+                    account_id,
+                    target_channel="comment",
+                    window_days=_settings(request).outreach_dm_window_days,
+                ),
+            )))),
+        },
     )
 
 
