@@ -9,6 +9,8 @@ from kol_search.models import Account, BackendCapabilities
 from kol_search.settings import Settings
 from kol_search.twitter.base import TwitterBackendError
 from kol_search.twitter.failover import FailoverTwitterClient
+from kol_search.twitter.factory import create_twitter_client
+from kol_search.twitter.mock import MockTwitterClient
 from kol_search.twitter.official import _parse_account, _parse_post
 from kol_search.twitter.opencli import OpenCliTwitterClient
 from kol_search.twitter.third_party import ThirdPartyTwitterClient
@@ -74,6 +76,17 @@ def test_twitterapi_io_key_alias_and_readiness():
     settings = Settings(_env_file=None, API_KEY="test-key", TWITTER_BACKEND="twitterapi_io")
     assert settings.twitterapi_io_api_key == "test-key"
     assert settings.backend_ready("twitterapi_io") == (True, None)
+
+
+def test_real_backend_is_default_and_mock_requires_explicit_opt_in():
+    settings = Settings(_env_file=None)
+    assert settings.twitter_backend == "twitterapi_io"
+    assert settings.backend_ready("mock")[0] is False
+    with pytest.raises(TwitterBackendError, match="Mock backend is disabled"):
+        create_twitter_client("mock", settings)
+
+    test_settings = Settings(_env_file=None, KOL_ENABLE_MOCK_BACKEND=True)
+    assert isinstance(create_twitter_client("mock", test_settings), MockTwitterClient)
 
 
 def test_twitterapi_io_normalizes_users_posts_and_pagination():
@@ -298,6 +311,34 @@ def test_opencli_backend_maps_read_only_commands():
     assert ["profile", "alice"] == calls[1][4:6]
     assert ["tweets", "alice", "--limit", "1"] == calls[2][4:8]
     assert ["following", "alice"] == calls[3][4:6]
+
+
+def test_opencli_profile_batch_keeps_partial_real_results():
+    def runner(command, **kwargs):
+        handle = command[5]
+        if handle == "bob":
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="Detached while handling command.",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps([{"screen_name": handle, "followers": 100}]),
+            stderr="",
+        )
+
+    client = OpenCliTwitterClient(
+        command="/usr/bin/true",
+        profile="ddd",
+        runner=runner,
+    )
+    accounts = client.get_users_by_usernames(["alice", "bob"])
+
+    assert [account.username for account in accounts] == ["alice"]
+    assert any("@bob" in warning for warning in client.warnings)
 
 
 def test_failover_is_sticky_and_preserves_diagnostics():

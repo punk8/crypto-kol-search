@@ -272,6 +272,11 @@ def create_twitter_reply_client(
 
     name = backend.lower().strip()
     if name == "mock":
+        if not settings.enable_mock_backend:
+            raise ReplyBackendUnavailableError(
+                "Mock reply publishing is disabled outside explicit test mode.",
+                hint="Use OpenCLI for a real, human-confirmed reply.",
+            )
         return MockTwitterReplyClient()
     if name == "opencli":
         return OpenCliTwitterReplyClient(
@@ -289,5 +294,5 @@ def create_twitter_reply_client(
         )
     raise ReplyBackendUnavailableError(
         f"Backend {name!r} is not registered for reply publishing.",
-        hint="Use mock locally or add a TwitterReplyClient adapter.",
+        hint="Use OpenCLI or add a TwitterReplyClient adapter.",
     )

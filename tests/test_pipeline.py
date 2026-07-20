@@ -9,6 +9,7 @@ def test_mock_pipeline_end_to_end(tmp_path: Path):
     settings = Settings(
         _env_file=None,
         TWITTER_BACKEND="mock",
+        KOL_ENABLE_MOCK_BACKEND=True,
         KOL_DB_PATH=str(tmp_path / "kol.db"),
         KOL_MAX_CONTACT_ACCOUNTS=30,
     )
@@ -37,6 +38,7 @@ def test_global_refresh_covers_multiple_topic_families(tmp_path: Path):
     settings = Settings(
         _env_file=None,
         TWITTER_BACKEND="mock",
+        KOL_ENABLE_MOCK_BACKEND=True,
         KOL_DB_PATH=str(tmp_path / "global.db"),
         KOL_MAX_CONTACT_ACCOUNTS=30,
     )

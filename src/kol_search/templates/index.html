@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="hero">
-  <div><p class="eyebrow">LOCAL RESEARCH CONSOLE</p><h1>发现真正有影响力的 Crypto KOL</h1>
-  <p>中英双语主题搜索、可解释排名，以及带原始证据的公开商务联系方式。</p></div>
+  <div><p class="eyebrow">X + 小红书 RESEARCH CONSOLE</p><h1>从真实内容发现近期热门 KOL</h1>
+  <p>双平台中英检索、24h/7d/30d 回退、可解释排名和原始链接证据。</p></div>
   <div class="schedule">
     {% if weekly_enabled %}
       每周 {{ weekly_day }} {{ "%02d"|format(weekly_hour) }}:00<br><span>{{ timezone }}</span>
@@ -20,15 +20,16 @@
 <section class="card">
   <h2>新建搜索任务</h2>
   <form action="/runs" method="post" class="form-grid">
-    <label class="wide">主题关键词<input name="query" value="DeFi, 去中心化金融" required></label>
-    <label>任务类型<select name="kind"><option value="theme">主题搜索</option><option value="global">刷新总库</option><option value="seed_build">构建 100 基础种子</option><option value="seed_expand">从 100 扩散到 200</option></select></label>
+    <label class="wide">主题关键词<input name="query" value="加密货币/RWA" required></label>
+    <label>任务类型<select name="kind"><option value="multiplatform">X + 小红书真实搜索</option><option value="theme">仅 X 深度搜索</option><option value="global">刷新总库</option><option value="seed_build">构建 100 基础种子</option><option value="seed_expand">从 100 扩散到 200</option></select></label>
+    <input type="hidden" name="platforms" value="x,xiaohongshu">
     <label>数据后端<select name="backend">
       {% for backend in backends %}<option value="{{ backend.name }}" {% if backend.name == default_backend %}selected{% endif %} {% if not backend.ready %}disabled{% endif %}>{{ backend.label }}{% if not backend.ready %} · 未配置{% endif %}</option>{% endfor %}
     </select></label>
     <label>语言<select name="language"><option value="all">中英不限</option><option value="zh">中文</option><option value="en">英文</option></select></label>
     <label>账号类型<select name="account_type"><option value="all">全部（分榜）</option><option value="person">个人</option><option value="organization">机构</option></select></label>
     <label>最低粉丝数<input name="min_followers" type="number" min="0" value="1000"></label>
-    <label>返回数量<input name="result_limit" type="number" min="1" max="100" value="100"></label>
+    <label>每平台目标数<input name="result_limit" type="number" min="1" max="50" value="10"></label>
     <label>基础种子集 ID<input name="seed_set_id" type="number" min="1" placeholder="仅扩散任务必填"></label>
     <label class="check"><input name="use_ai" type="checkbox" value="true" {% if not ai_ready %}disabled{% endif %}> 模型增强{% if not ai_ready %}（未配置）{% endif %}</label>
     <div class="wide"><button type="submit">开始发现</button></div>

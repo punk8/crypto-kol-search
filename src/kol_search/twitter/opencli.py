@@ -87,6 +87,7 @@ class OpenCliTwitterClient:
             "backend_calls": {self.name: 0},
             "fallback_count": 0,
         }
+        self.warnings: list[str] = []
 
     def _id(self, username: str) -> str:
         handle = username.lstrip("@").strip()
@@ -244,9 +245,10 @@ class OpenCliTwitterClient:
             try:
                 account = self.get_user_by_username(username)
             except TwitterBackendError as exc:
-                if "not found" in str(exc).lower() or "empty" in str(exc).lower():
-                    continue
-                raise
+                warning = f"OpenCLI profile @{username}: {exc}"
+                if warning not in self.warnings:
+                    self.warnings.append(warning)
+                continue
             if account:
                 output.append(account)
         return output

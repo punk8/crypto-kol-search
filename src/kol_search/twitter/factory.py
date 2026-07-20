@@ -20,9 +20,14 @@ def create_twitter_client(
     backend: mock | official | third_party | twitterapi_io | twscrape | opencli
     """
     settings = settings or get_settings()
-    name = (backend or settings.twitter_backend or "mock").lower().strip()
+    name = (backend or settings.twitter_backend or "twitterapi_io").lower().strip()
 
     if name == "mock":
+        if not settings.enable_mock_backend:
+            raise TwitterBackendError(
+                "Mock backend is disabled outside explicit test/demo mode.",
+                hint="Use a configured real backend, or set KOL_ENABLE_MOCK_BACKEND=true only for tests.",
+            )
         return MockTwitterClient()
 
     if name == "official":

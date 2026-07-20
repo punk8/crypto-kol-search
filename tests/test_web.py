@@ -9,6 +9,7 @@ from kol_search.web import app
 def test_dashboard_run_detail_review_and_exports(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("KOL_DB_PATH", str(tmp_path / "web.db"))
     monkeypatch.setenv("TWITTER_BACKEND", "mock")
+    monkeypatch.setenv("KOL_ENABLE_MOCK_BACKEND", "true")
     monkeypatch.setenv("KOL_MAX_USER_QUERIES", "8")
     monkeypatch.setenv("KOL_MAX_POST_QUERIES", "8")
     monkeypatch.setenv("KOL_MAX_CANDIDATES", "500")
@@ -65,6 +66,7 @@ def test_dashboard_run_detail_review_and_exports(monkeypatch, tmp_path: Path):
 def test_web_seed_build_expand_review_and_exports(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("KOL_DB_PATH", str(tmp_path / "seed-web.db"))
     monkeypatch.setenv("TWITTER_BACKEND", "mock")
+    monkeypatch.setenv("KOL_ENABLE_MOCK_BACKEND", "true")
     monkeypatch.setenv("KOL_ENABLE_WEEKLY_REFRESH", "false")
     with TestClient(app) as client:
         build = client.post(
@@ -124,6 +126,7 @@ def test_web_seed_build_expand_review_and_exports(monkeypatch, tmp_path: Path):
 def test_signal_radars_brand_config_and_manual_scan(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("KOL_DB_PATH", str(tmp_path / "signal-web.db"))
     monkeypatch.setenv("TWITTER_BACKEND", "mock")
+    monkeypatch.setenv("KOL_ENABLE_MOCK_BACKEND", "true")
     monkeypatch.setenv("KOL_ENABLE_WEEKLY_REFRESH", "false")
     monkeypatch.setenv("KOL_ENABLE_SIGNAL_SCAN", "false")
     with TestClient(app) as client:

@@ -10,6 +10,7 @@ def test_signal_pipeline_builds_idempotent_reply_and_topic_queues(tmp_path: Path
     settings = Settings(
         _env_file=None,
         TWITTER_BACKEND="mock",
+        KOL_ENABLE_MOCK_BACKEND=True,
         KOL_DB_PATH=str(tmp_path / "signals.db"),
         KOL_SIGNAL_CORE_ACCOUNTS=20,
         KOL_SIGNAL_ROTATION_ACCOUNTS=0,

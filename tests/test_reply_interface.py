@@ -189,6 +189,8 @@ def test_opencli_unconfirmed_submission_is_not_retried(tmp_path: Path):
 
 def test_reply_backend_factory_exposes_opencli_only():
     settings = Settings(_env_file=None)
+    with pytest.raises(ReplyBackendUnavailableError, match="Mock reply publishing is disabled"):
+        create_twitter_reply_client("mock", settings)
     with pytest.raises(ReplyBackendUnavailableError, match="twitterapi_io"):
         create_twitter_reply_client("twitterapi_io", settings)
     assert isinstance(

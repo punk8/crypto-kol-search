@@ -2,12 +2,14 @@
 {% block title %}品牌设置 · Crypto KOL Search{% endblock %}
 {% block content %}
 <section class="workspace-head">
-  <div><p class="eyebrow">BRAND PROFILE</p><h1>品牌回复上下文</h1><p>用于约束回复草稿和趋势选题。所有对外发布仍由人工完成。</p></div>
+  <div><p class="eyebrow">BRAND PROFILE</p><h1>品牌回复上下文</h1><p>用于约束评论与私信草稿；每条外发内容仍需人工批准。</p></div>
 </section>
 <form action="/settings/brand" method="post" class="settings-form">
   <div class="form-grid">
     <label>品牌名称<input name="brand_name" value="{{ brand.brand_name }}" required></label>
     <label>X handle<input name="x_handle" value="{{ brand.x_handle }}" placeholder="your_brand" required></label>
+    <label>小红书账号<input name="xiaohongshu_handle" value="{{ brand.xiaohongshu_handle or '' }}" placeholder="品牌官方账号"></label>
+    <label class="wide">产品链接<input name="product_url" type="url" value="{{ brand.product_url or '' }}" placeholder="https://product.example.com"></label>
     <label>语气<input name="tone" value="{{ brand.tone }}"></label>
     <label class="wide">项目简介<textarea name="description" rows="4" placeholder="项目解决什么问题、核心能力和差异点">{{ brand.description }}</textarea></label>
     <label class="wide">目标受众<textarea name="audience" rows="3" placeholder="希望建立关系的人群与使用场景">{{ brand.audience }}</textarea></label>

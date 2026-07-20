@@ -87,6 +87,7 @@ class DiscoveryPipeline:
             report(5, "planning")
             pool, discovered_posts = self._discover(client, plans, config, stats, warnings)
             if not pool:
+                report(0, "discovery_failed")
                 raise RuntimeError("未发现任何候选账号；请检查查询、后端权限或数据额度")
             report(28, "profile_lookup")
 
@@ -233,11 +234,13 @@ class DiscoveryPipeline:
             if client.capabilities.user_search:
                 for query in plan.user_queries:
                     try:
+                        remaining = max(1, self.settings.max_candidates - len(pool))
                         found = client.search_users(
                             query,
                             max_results=min(
                                 20 if global_mode else 100,
                                 client.capabilities.user_search_page_size,
+                                remaining,
                             ),
                         )
                         stats["user_queries"] += 1

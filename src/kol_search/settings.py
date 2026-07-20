@@ -21,7 +21,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    twitter_backend: BackendName = Field(default="mock", alias="TWITTER_BACKEND")
+    twitter_backend: BackendName = Field(default="twitterapi_io", alias="TWITTER_BACKEND")
+    enable_mock_backend: bool = Field(default=False, alias="KOL_ENABLE_MOCK_BACKEND")
 
     x_bearer_token: str | None = Field(default=None, alias="X_BEARER_TOKEN")
     x_api_key: str | None = Field(default=None, alias="X_API_KEY")
@@ -50,6 +51,9 @@ class Settings(BaseSettings):
 
     opencli_command: str = Field(default="opencli", alias="OPENCLI_COMMAND")
     opencli_profile: str = Field(default="ddd", alias="OPENCLI_PROFILE")
+    xiaohongshu_opencli_profile: str = Field(
+        default="ddd", alias="XIAOHONGSHU_OPENCLI_PROFILE"
+    )
     opencli_timeout_seconds: float = Field(default=90.0, alias="OPENCLI_TIMEOUT_SECONDS")
     twitter_fallback_backend: str | None = Field(
         default="opencli", alias="TWITTER_FALLBACK_BACKEND"
@@ -74,6 +78,29 @@ class Settings(BaseSettings):
     signal_opportunity_ttl_hours: int = Field(
         default=24, alias="KOL_SIGNAL_OPPORTUNITY_TTL_HOURS"
     )
+    trend_cache_minutes: int = Field(default=15, alias="KOL_TREND_CACHE_MINUTES")
+
+    admin_username: str = Field(default="admin", alias="KOL_ADMIN_USERNAME")
+    admin_password: str | None = Field(default=None, alias="KOL_ADMIN_PASSWORD")
+    session_secret: str | None = Field(default=None, alias="KOL_SESSION_SECRET")
+    live_write_enabled: bool = Field(default=False, alias="KOL_LIVE_WRITE_ENABLED")
+    approved_product_domains: str = Field(default="", alias="KOL_APPROVED_PRODUCT_DOMAINS")
+    postiz_api_url: str = Field(
+        default="https://api.postiz.com/public/v1", alias="POSTIZ_API_URL"
+    )
+    postiz_api_key: str | None = Field(default=None, alias="POSTIZ_API_KEY")
+    postiz_integration_cache_minutes: int = Field(
+        default=15, alias="POSTIZ_INTEGRATION_CACHE_MINUTES"
+    )
+    publishing_media_dir: str = Field(
+        default="data/publishing_media", alias="KOL_PUBLISHING_MEDIA_DIR"
+    )
+    comment_daily_limit: int = Field(default=10, alias="KOL_COMMENT_DAILY_LIMIT")
+    comment_hourly_limit: int = Field(default=3, alias="KOL_COMMENT_HOURLY_LIMIT")
+    dm_daily_limit: int = Field(default=5, alias="KOL_DM_DAILY_LIMIT")
+    dm_hourly_limit: int = Field(default=2, alias="KOL_DM_HOURLY_LIMIT")
+    author_cooldown_days: int = Field(default=7, alias="KOL_AUTHOR_COOLDOWN_DAYS")
+    global_kill_switch: bool = Field(default=False, alias="KOL_GLOBAL_KILL_SWITCH")
 
     max_user_queries: int = Field(default=8, alias="KOL_MAX_USER_QUERIES")
     max_post_queries: int = Field(default=8, alias="KOL_MAX_POST_QUERIES")
@@ -98,9 +125,20 @@ class Settings(BaseSettings):
             p = PROJECT_ROOT / p
         return p
 
+    def publishing_media_path(self) -> Path:
+        p = Path(self.publishing_media_dir)
+        if not p.is_absolute():
+            p = PROJECT_ROOT / p
+        return p
+
     def backend_ready(self, name: str) -> tuple[bool, str | None]:
         if name == "mock":
-            return True, None
+            return (
+                self.enable_mock_backend,
+                None
+                if self.enable_mock_backend
+                else "Mock 后端仅限测试；如确需使用，请显式设置 KOL_ENABLE_MOCK_BACKEND=true",
+            )
         if name == "official":
             return (bool(self.x_bearer_token), None if self.x_bearer_token else "缺少 X_BEARER_TOKEN")
         if name == "third_party":
@@ -142,6 +180,47 @@ class Settings(BaseSettings):
                 None if ready else f"OpenCLI profile {self.opencli_profile!r} 未连接",
             )
         return False, "未知后端"
+
+    def xiaohongshu_ready(self) -> tuple[bool, str | None]:
+        if not self.opencli_command or not self.xiaohongshu_opencli_profile:
+            return False, "缺少 OPENCLI_COMMAND 或 XIAOHONGSHU_OPENCLI_PROFILE"
+        if not shutil.which(self.opencli_command) and "/" not in self.opencli_command:
+            return False, f"找不到 OpenCLI 命令：{self.opencli_command}"
+        try:
+            result = subprocess.run(
+                [self.opencli_command, "profile", "list"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, f"OpenCLI 状态检查失败：{exc}"
+        output = f"{result.stdout}\n{result.stderr}"
+        ready = (
+            result.returncode == 0
+            and self.xiaohongshu_opencli_profile in output
+            and "connected" in output
+        )
+        return (
+            ready,
+            None
+            if ready
+            else f"OpenCLI profile {self.xiaohongshu_opencli_profile!r} 未连接",
+        )
+
+    def product_domain_allowlist(self) -> set[str]:
+        return {
+            value.strip().lower()
+            for value in self.approved_product_domains.split(",")
+            if value.strip()
+        }
+
+    def postiz_ready(self) -> tuple[bool, str | None]:
+        return (
+            bool(self.postiz_api_key),
+            None if self.postiz_api_key else "缺少 POSTIZ_API_KEY",
+        )
 
 
 def get_settings() -> Settings:

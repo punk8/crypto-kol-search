@@ -6,10 +6,17 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+PlatformName = Literal["x", "xiaohongshu"]
+
+
 class Account(BaseModel):
-    """Normalized Twitter/X user profile."""
+    """Normalized social-platform account."""
 
     id: str
+    platform: PlatformName = "x"
+    external_id: str | None = None
+    source_provider: str = "unknown"
+    captured_at: str | None = None
     username: str
     name: str | None = None
     description: str | None = None
@@ -32,9 +39,13 @@ class Account(BaseModel):
 
 
 class Post(BaseModel):
-    """Normalized tweet/post."""
+    """Normalized social-platform post."""
 
     id: str
+    platform: PlatformName = "x"
+    external_id: str | None = None
+    source_provider: str = "unknown"
+    captured_at: str | None = None
     author_id: str
     author_username: str | None = None
     text: str = ""
@@ -61,9 +72,11 @@ class Post(BaseModel):
 
 
 class TrendSignal(BaseModel):
-    """Native X trend used as one input to topic ranking."""
+    """Native or derived platform trend used as one input to topic ranking."""
 
     name: str
+    platform: PlatformName = "x"
+    direction: str = "other"
     rank: int = 0
     post_count: int = 0
     url: str | None = None
@@ -140,6 +153,10 @@ class Candidate(BaseModel):
         return {
             "rank": self.rank,
             "username": self.account.username,
+            "platform": self.account.platform,
+            "external_id": self.account.external_id or self.account.id,
+            "source_provider": self.account.source_provider,
+            "captured_at": self.account.captured_at,
             "name": self.account.name,
             "followers": self.account.followers_count,
             "verified": self.account.verified,
@@ -168,7 +185,11 @@ class Candidate(BaseModel):
                 }
                 for e in self.edges
             ],
-            "url": f"https://x.com/{self.account.username}",
+            "url": self.account.url or (
+                f"https://x.com/{self.account.username}"
+                if self.account.platform == "x"
+                else None
+            ),
         }
 
 

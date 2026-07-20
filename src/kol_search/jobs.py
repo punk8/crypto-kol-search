@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from kol_search.db import Store
 from kol_search.discovery.pipeline import DiscoveryPipeline
+from kol_search.discovery.multiplatform import MultiPlatformDiscoveryPipeline
 from kol_search.discovery.seed_pipeline import SeedPipeline
 from kol_search.discovery.signals import SignalPipeline
 from kol_search.settings import Settings
@@ -21,6 +22,7 @@ class JobWorker:
         self.store = store
         self.settings = settings
         self.pipeline = DiscoveryPipeline(store, settings)
+        self.multiplatform_pipeline = MultiPlatformDiscoveryPipeline(store, settings)
         self.seed_pipeline = SeedPipeline(store, settings)
         self.signal_pipeline = SignalPipeline(store, settings)
         self._stop = threading.Event()
@@ -77,7 +79,11 @@ class JobWorker:
                     else (
                         self.seed_pipeline
                         if run.get("kind") in {"seed_build", "seed_expand"}
-                        else self.pipeline
+                        else (
+                            self.multiplatform_pipeline
+                            if run.get("kind") == "multiplatform"
+                            else self.pipeline
+                        )
                     )
                 )
                 candidates = pipeline.run(run, progress)

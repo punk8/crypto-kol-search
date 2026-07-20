@@ -21,14 +21,14 @@
   <article class="radar-item">
     <div class="radar-rank"><strong>{{ "%.0f"|format(item.score) }}</strong><span>机会分</span></div>
     <div class="radar-body">
-      <div class="radar-title"><div><strong>{{ item.name or item.username }}</strong><span>@{{ item.username }} · {{ "{:,}".format(item.followers_count or 0) }} followers</span></div><span class="status {{ item.status }}">{{ item.status }}</span></div>
+      <div class="radar-title"><div><strong>{{ item.name or item.username }}</strong><span>{{ item.platform or 'x' }} · @{{ item.username }} · {{ "{:,}".format(item.followers_count or 0) }} followers</span></div><span class="status {{ item.status }}">{{ item.status }}</span></div>
       <p class="source-post">{{ item.text }}</p>
       <div class="metric-line"><span>{{ item.like_count }} 赞</span><span>{{ item.retweet_count }} 转发</span><span>{{ item.reply_count }} 回复</span><span>{{ item.language }}</span><span>{{ item.created_at[:16]|replace('T', ' ') }}</span></div>
       <div class="reason-line">{% for reason in item.reasons %}<span>{{ reason }}</span>{% endfor %}</div>
       <form action="/reply-opportunities/{{ item.id }}" method="post" class="editor-form">
         <label>回复草稿<textarea name="draft" rows="3">{{ item.draft }}</textarea></label>
-        <label>实际回复链接<input name="reply_url" value="{{ item.reply_url or '' }}" placeholder="https://x.com/your_brand/status/..."></label>
-        <div class="editor-actions"><a class="button ghost" href="{{ item.post_url }}" target="_blank" rel="noopener">打开原帖</a><button class="ghost" type="submit">保存草稿</button>{% if item.status == 'pending' and opencli_ready %}<button name="backend" value="opencli" formaction="/reply-opportunities/{{ item.id }}/publish" onclick="return confirm('确认通过当前登录的 X 账号发送这条回复？')">通过 OpenCLI 回复</button>{% endif %}{% if item.status in ['pending', 'confirmation_required'] %}<button name="status" value="replied">确认已回复</button><button class="ghost" name="status" value="skipped">跳过</button>{% elif item.status == 'skipped' %}<button class="ghost" name="status" value="pending">恢复待处理</button>{% endif %}</div>
+        <label>实际回复链接<input name="reply_url" value="{{ item.reply_url or '' }}" placeholder="发送后由平台回执自动填写"></label>
+        <div class="editor-actions"><a class="button ghost" href="{{ item.post_url }}" target="_blank" rel="noopener">打开原帖</a><button class="ghost" type="submit">保存草稿</button>{% if item.status == 'pending' and managed_accounts %}<select name="managed_account_id" aria-label="发送账号">{% for account in managed_accounts if account.platform == (item.platform or 'x') %}<option value="{{ account.id }}">{{ account.platform }} · {{ account.username }}</option>{% endfor %}</select><button formaction="/reply-opportunities/{{ item.id }}/publish">创建逐条审批任务</button>{% endif %}{% if item.status in ['pending', 'confirmation_required'] %}<button class="ghost" name="status" value="skipped">跳过</button>{% elif item.status == 'skipped' %}<button class="ghost" name="status" value="pending">恢复待处理</button>{% endif %}</div>
       </form>
     </div>
   </article>

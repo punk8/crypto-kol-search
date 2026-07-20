@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -366,6 +367,195 @@ CREATE TABLE IF NOT EXISTS seed_members (
     FOREIGN KEY (source_run_id) REFERENCES runs(id)
 );
 CREATE INDEX IF NOT EXISTS idx_seed_members_status ON seed_members(seed_set_id, review_status, rank);
+
+CREATE TABLE IF NOT EXISTS managed_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    external_account_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    display_name TEXT,
+    browser_profile TEXT NOT NULL,
+    roles_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active',
+    comment_daily_limit INTEGER NOT NULL DEFAULT 10,
+    comment_hourly_limit INTEGER NOT NULL DEFAULT 3,
+    dm_daily_limit INTEGER NOT NULL DEFAULT 5,
+    dm_hourly_limit INTEGER NOT NULL DEFAULT 2,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_health_at TEXT,
+    last_health_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(platform, external_account_id)
+);
+
+CREATE TABLE IF NOT EXISTS outbound_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    managed_account_id INTEGER NOT NULL,
+    target_external_id TEXT NOT NULL,
+    target_url TEXT,
+    target_author_id TEXT,
+    conversation_id TEXT,
+    draft TEXT NOT NULL,
+    final_text TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    idempotency_key TEXT NOT NULL UNIQUE,
+    approved_by TEXT,
+    approved_at TEXT,
+    started_at TEXT,
+    sent_at TEXT,
+    receipt_url TEXT,
+    receipt_external_id TEXT,
+    receipt_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (managed_account_id) REFERENCES managed_accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_outbound_actions_queue
+ON outbound_actions(status, platform, kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_outbound_actions_limits
+ON outbound_actions(managed_account_id, kind, sent_at);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    managed_account_id INTEGER NOT NULL,
+    external_conversation_id TEXT,
+    participant_external_id TEXT NOT NULL,
+    participant_name TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    last_message_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(platform, managed_account_id, participant_external_id),
+    FOREIGN KEY (managed_account_id) REFERENCES managed_accounts(id)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL,
+    external_message_id TEXT,
+    direction TEXT NOT NULL,
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'observed',
+    sent_at TEXT,
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(conversation_id, external_message_id),
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+);
+
+CREATE TABLE IF NOT EXISTS do_not_contact (
+    platform TEXT NOT NULL,
+    target_external_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(platform, target_external_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    object_type TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_object
+ON audit_events(object_type, object_id, created_at);
+
+CREATE TABLE IF NOT EXISTS trend_categories (
+    slug TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    keywords_json TEXT NOT NULL DEFAULT '[]',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS system_controls (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS postiz_integrations (
+    external_id TEXT PRIMARY KEY,
+    identifier TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    profile TEXT NOT NULL DEFAULT '',
+    picture TEXT,
+    disabled INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    captured_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_postiz_integrations_provider
+ON postiz_integrations(identifier, disabled, profile);
+
+CREATE TABLE IF NOT EXISTS owned_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    source_cluster_id INTEGER,
+    integration_id TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'now',
+    timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+    scheduled_at_local TEXT,
+    scheduled_at_utc TEXT,
+    who_can_reply TEXT NOT NULL DEFAULT 'everyone',
+    made_with_ai INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    idempotency_key TEXT UNIQUE,
+    postiz_post_id TEXT,
+    release_url TEXT,
+    approved_by TEXT,
+    approved_at TEXT,
+    submitted_at TEXT,
+    published_at TEXT,
+    receipt_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(source_cluster_id) REFERENCES topic_clusters(id),
+    FOREIGN KEY(integration_id) REFERENCES postiz_integrations(external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_owned_posts_status
+ON owned_posts(status, scheduled_at_utc, created_at);
+
+CREATE TABLE IF NOT EXISTS owned_post_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owned_post_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    UNIQUE(owned_post_id, position),
+    FOREIGN KEY(owned_post_id) REFERENCES owned_posts(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS owned_post_media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owned_post_id INTEGER NOT NULL,
+    item_position INTEGER NOT NULL,
+    source_type TEXT NOT NULL,
+    source_value TEXT NOT NULL,
+    filename TEXT,
+    content_type TEXT,
+    storage_path TEXT,
+    postiz_asset_id TEXT,
+    postiz_asset_path TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(owned_post_id) REFERENCES owned_posts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_owned_post_media_post
+ON owned_post_media(owned_post_id, item_position, id);
 """
 
 
@@ -390,6 +580,10 @@ RUN_COLUMNS: dict[str, str] = {
 }
 
 ACCOUNT_COLUMNS: dict[str, str] = {
+    "platform": "TEXT NOT NULL DEFAULT 'x'",
+    "external_id": "TEXT",
+    "source_provider": "TEXT NOT NULL DEFAULT 'legacy'",
+    "captured_at": "TEXT",
     "listed_count": "INTEGER NOT NULL DEFAULT 0",
     "protected": "INTEGER NOT NULL DEFAULT 0",
     "created_at": "TEXT",
@@ -404,6 +598,10 @@ ACCOUNT_COLUMNS: dict[str, str] = {
 }
 
 POST_COLUMNS: dict[str, str] = {
+    "platform": "TEXT NOT NULL DEFAULT 'x'",
+    "external_id": "TEXT",
+    "source_provider": "TEXT NOT NULL DEFAULT 'legacy'",
+    "captured_at": "TEXT",
     "lang": "TEXT",
     "fetched_at": "TEXT",
     "view_count": "INTEGER NOT NULL DEFAULT 0",
@@ -423,6 +621,15 @@ EDGE_COLUMNS: dict[str, str] = {
     "evidence_url": "TEXT",
     "first_seen_at": "TEXT",
     "last_seen_at": "TEXT",
+}
+
+TOPIC_CLUSTER_COLUMNS: dict[str, str] = {
+    "direction": "TEXT NOT NULL DEFAULT 'other'",
+}
+
+BRAND_COLUMNS: dict[str, str] = {
+    "xiaohongshu_handle": "TEXT NOT NULL DEFAULT ''",
+    "product_url": "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -473,10 +680,33 @@ class Store:
             for name, definition in ACCOUNT_COLUMNS.items():
                 if name not in account_existing:
                     connection.execute(f"ALTER TABLE accounts ADD COLUMN {name} {definition}")
+            connection.execute("DROP INDEX IF EXISTS idx_accounts_username_nocase")
+            connection.execute(
+                "UPDATE accounts SET platform=COALESCE(NULLIF(platform, ''), 'x'), "
+                "external_id=COALESCE(NULLIF(external_id, ''), id), "
+                "captured_at=COALESCE(captured_at, updated_at)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_platform_external "
+                "ON accounts(platform, external_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_accounts_platform_username "
+                "ON accounts(platform, username COLLATE NOCASE)"
+            )
             post_existing = {row[1] for row in connection.execute("PRAGMA table_info(posts)")}
             for name, definition in POST_COLUMNS.items():
                 if name not in post_existing:
                     connection.execute(f"ALTER TABLE posts ADD COLUMN {name} {definition}")
+            connection.execute(
+                "UPDATE posts SET platform=COALESCE(NULLIF(platform, ''), 'x'), "
+                "external_id=COALESCE(NULLIF(external_id, ''), id), "
+                "captured_at=COALESCE(captured_at, fetched_at)"
+            )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_platform_external "
+                "ON posts(platform, external_id)"
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at)"
             )
@@ -492,6 +722,44 @@ class Store:
                     connection.execute(
                         f"ALTER TABLE discovery_edges ADD COLUMN {name} {definition}"
                     )
+            topic_existing = {
+                row[1] for row in connection.execute("PRAGMA table_info(topic_clusters)")
+            }
+            for name, definition in TOPIC_CLUSTER_COLUMNS.items():
+                if name not in topic_existing:
+                    connection.execute(
+                        f"ALTER TABLE topic_clusters ADD COLUMN {name} {definition}"
+                    )
+            brand_existing = {
+                row[1] for row in connection.execute("PRAGMA table_info(brand_profile)")
+            }
+            for name, definition in BRAND_COLUMNS.items():
+                if name not in brand_existing:
+                    connection.execute(
+                        f"ALTER TABLE brand_profile ADD COLUMN {name} {definition}"
+                    )
+            now = utc_now()
+            for slug, display_name, keywords in (
+                ("finance", "金融", ["finance", "金融", "market", "宏观", "投资"]),
+                ("technology", "科技", ["technology", "tech", "科技", "芯片", "软件"]),
+                ("ai", "AI", ["ai", "人工智能", "大模型", "llm", "agent"]),
+                ("crypto-rwa", "加密/RWA", ["crypto", "加密货币", "bitcoin", "RWA", "代币化"]),
+            ):
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO trend_categories(
+                        slug, display_name, keywords_json, enabled, updated_at
+                    ) VALUES(?, ?, ?, 1, ?)
+                    """,
+                    (slug, display_name, _json(keywords), now),
+                )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO system_controls(key, value, updated_by, updated_at)
+                VALUES('global_kill_switch', 'false', 'migration', ?)
+                """,
+                (now,),
+            )
             connection.execute(
                 "UPDATE runs SET created_at=COALESCE(created_at, started_at, ?) WHERE created_at IS NULL",
                 (utc_now(),),
@@ -510,6 +778,14 @@ class Store:
             )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)",
+                (utc_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)",
+                (utc_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, ?)",
                 (utc_now(),),
             )
 
@@ -695,12 +971,14 @@ class Store:
     def fail_run(self, run_id: int, error: str) -> None:
         self.finish_run(run_id, 0, status="failed", error=error)
 
-    def resolve_account_id(self, username: str, proposed_id: str) -> str:
-        """Reuse the canonical id already associated with a case-insensitive handle."""
+    def resolve_account_id(
+        self, username: str, proposed_id: str, platform: str = "x"
+    ) -> str:
+        """Reuse the canonical id associated with a platform-scoped handle."""
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT id FROM accounts WHERE username=? COLLATE NOCASE",
-                (username.lstrip("@"),),
+                "SELECT id FROM accounts WHERE platform=? AND username=? COLLATE NOCASE",
+                (platform, username.lstrip("@")),
             ).fetchone()
         return str(row["id"]) if row else str(proposed_id)
 
@@ -709,19 +987,26 @@ class Store:
     ) -> str:
         enrichment = enrichment or {}
         now = utc_now()
-        effective_id = self.resolve_account_id(account_dict["username"], account_dict["id"])
+        platform = str(account_dict.get("platform") or "x")
+        effective_id = self.resolve_account_id(
+            account_dict["username"], account_dict["id"], platform
+        )
         account_dict = dict(account_dict)
         account_dict["id"] = effective_id
+        external_id = str(account_dict.get("external_id") or effective_id)
         with self.connection() as connection:
             connection.execute(
                 """
                 INSERT INTO accounts (
-                    id, username, name, description, followers_count, following_count, tweet_count,
+                    id, platform, external_id, source_provider, captured_at,
+                    username, name, description, followers_count, following_count, tweet_count,
                     listed_count, verified, protected, created_at, profile_image_url, profile_url,
                     location, entities_json, account_type, languages_json, topics_json, summary,
                     raw_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    platform=excluded.platform, external_id=excluded.external_id,
+                    source_provider=excluded.source_provider, captured_at=excluded.captured_at,
                     username=excluded.username, name=excluded.name, description=excluded.description,
                     followers_count=excluded.followers_count, following_count=excluded.following_count,
                     tweet_count=excluded.tweet_count, listed_count=excluded.listed_count,
@@ -733,7 +1018,10 @@ class Store:
                     raw_json=excluded.raw_json, updated_at=excluded.updated_at
                 """,
                 (
-                    account_dict["id"], account_dict["username"], account_dict.get("name"),
+                    account_dict["id"], platform, external_id,
+                    account_dict.get("source_provider", "unknown"),
+                    account_dict.get("captured_at") or now,
+                    account_dict["username"], account_dict.get("name"),
                     account_dict.get("description"), account_dict.get("followers_count", 0),
                     account_dict.get("following_count", 0), account_dict.get("tweet_count", 0),
                     account_dict.get("listed_count", 0), int(bool(account_dict.get("verified"))),
@@ -761,17 +1049,22 @@ class Store:
         now = captured_at or utc_now()
         for post in posts:
             if post.author_username:
-                post.author_id = self.resolve_account_id(post.author_username, post.author_id)
+                post.author_id = self.resolve_account_id(
+                    post.author_username, post.author_id, post.platform
+                )
         with self.connection() as connection:
             connection.executemany(
                 """
                 INSERT INTO posts (
-                    id, author_id, author_username, text, created_at, like_count, retweet_count,
+                    id, platform, external_id, source_provider, captured_at,
+                    author_id, author_username, text, created_at, like_count, retweet_count,
                     reply_count, quote_count, view_count, bookmark_count, lang, url,
                     conversation_id, in_reply_to_user_id, in_reply_to_username,
                     referenced_post_id, reference_type, raw_json, fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    platform=excluded.platform, external_id=excluded.external_id,
+                    source_provider=excluded.source_provider, captured_at=excluded.captured_at,
                     text=excluded.text, like_count=excluded.like_count,
                     retweet_count=excluded.retweet_count, reply_count=excluded.reply_count,
                     quote_count=excluded.quote_count, view_count=excluded.view_count,
@@ -786,7 +1079,9 @@ class Store:
                 """,
                 [
                     (
-                        post.id, post.author_id, post.author_username, post.text, post.created_at,
+                        post.id, post.platform, post.external_id or post.id,
+                        post.source_provider, post.captured_at or now,
+                        post.author_id, post.author_username, post.text, post.created_at,
                         post.like_count, post.retweet_count, post.reply_count, post.quote_count,
                         post.view_count, post.bookmark_count, post.lang, post.url,
                         post.conversation_id, post.in_reply_to_user_id,
@@ -1025,7 +1320,8 @@ class Store:
 
     def get_run_results(self, run_id: int, account_type: str = "all") -> list[dict[str, Any]]:
         sql = """
-            SELECT cs.*, a.name, a.description, a.followers_count, a.verified,
+            SELECT cs.*, a.platform, a.external_id, a.source_provider, a.captured_at,
+                   a.profile_url, a.name, a.description, a.followers_count, a.verified,
                    a.account_type, a.languages_json, a.topics_json,
                    (SELECT COUNT(*) FROM contacts c WHERE c.account_id=a.id AND c.status!='rejected') AS contact_count
             FROM candidate_scores cs JOIN accounts a ON a.id=cs.account_id
@@ -1038,7 +1334,7 @@ class Store:
             else:
                 sql += " AND a.account_type=?"
                 params.append(account_type)
-        sql += " ORDER BY cs.rank IS NULL, cs.rank, cs.score_total DESC"
+        sql += " ORDER BY a.platform, cs.rank IS NULL, cs.rank, cs.score_total DESC"
         with self.connection() as connection:
             rows = connection.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
@@ -1355,6 +1651,8 @@ class Store:
                 "id": 1,
                 "brand_name": "",
                 "x_handle": "",
+                "xiaohongshu_handle": "",
+                "product_url": "",
                 "description": "",
                 "audience": "",
                 "tone": "professional, concise, conversational",
@@ -1383,24 +1681,31 @@ class Store:
         tone: str,
         allowed_claims: list[str],
         forbidden_terms: list[str],
+        xiaohongshu_handle: str = "",
+        product_url: str = "",
     ) -> None:
         now = utc_now()
         with self.connection() as connection:
             connection.execute(
                 """
                 INSERT INTO brand_profile(
-                    id, brand_name, x_handle, description, audience, tone,
+                    id, brand_name, x_handle, xiaohongshu_handle, product_url,
+                    description, audience, tone,
                     allowed_claims_json, forbidden_terms_json, updated_at
-                ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     brand_name=excluded.brand_name, x_handle=excluded.x_handle,
+                    xiaohongshu_handle=excluded.xiaohongshu_handle,
+                    product_url=excluded.product_url,
                     description=excluded.description, audience=excluded.audience,
                     tone=excluded.tone, allowed_claims_json=excluded.allowed_claims_json,
                     forbidden_terms_json=excluded.forbidden_terms_json,
                     updated_at=excluded.updated_at
                 """,
                 (
-                    brand_name.strip(), x_handle.strip().lstrip("@"), description.strip(),
+                    brand_name.strip(), x_handle.strip().lstrip("@"),
+                    xiaohongshu_handle.strip().lstrip("@"), product_url.strip(),
+                    description.strip(),
                     audience.strip(), tone.strip(), _json(allowed_claims),
                     _json(forbidden_terms), now,
                 ),
@@ -1547,7 +1852,8 @@ class Store:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         sql = """
-            SELECT ro.*, p.text, p.created_at, p.url AS post_url, p.like_count,
+            SELECT ro.*, p.platform, p.external_id AS post_external_id,
+                   p.text, p.created_at, p.url AS post_url, p.like_count,
                    p.retweet_count, p.reply_count, p.quote_count, p.view_count,
                    a.username, a.name, a.followers_count, a.profile_image_url
             FROM reply_opportunities ro
@@ -1573,7 +1879,8 @@ class Store:
             row = connection.execute(
                 """
                 SELECT ro.*, p.text, p.created_at, p.url AS post_url,
-                       p.conversation_id, p.author_username,
+                       p.platform, p.external_id AS post_external_id,
+                       p.conversation_id, p.author_username, p.author_id,
                        a.username, a.name, a.followers_count
                 FROM reply_opportunities ro
                 JOIN posts p ON p.id=ro.post_id
@@ -1731,6 +2038,8 @@ class Store:
         draft_source: str,
         native_trend: bool,
         post_ids: list[tuple[str, float]],
+        direction: str = "other",
+        replace_posts: bool = False,
         observed_at: str | None = None,
     ) -> int:
         if lifecycle not in {"emerging", "rising", "breakout", "declining"}:
@@ -1742,8 +2051,8 @@ class Store:
                 INSERT INTO topic_clusters(
                     fingerprint, title, summary, language, lifecycle, heat_score,
                     metrics_json, outline, draft, draft_source, native_trend,
-                    first_seen_at, last_seen_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    direction, first_seen_at, last_seen_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(fingerprint) DO UPDATE SET
                     title=excluded.title, summary=excluded.summary,
                     language=excluded.language, lifecycle=excluded.lifecycle,
@@ -1755,19 +2064,24 @@ class Store:
                     draft_source=CASE WHEN topic_clusters.manually_edited=1
                                       THEN topic_clusters.draft_source
                                       ELSE excluded.draft_source END,
-                    native_trend=excluded.native_trend, last_seen_at=excluded.last_seen_at,
+                    native_trend=excluded.native_trend, direction=excluded.direction,
+                    last_seen_at=excluded.last_seen_at,
                     updated_at=excluded.updated_at
                 """,
                 (
                     fingerprint, title, summary, language, lifecycle, heat_score,
                     _json(metrics), outline, draft, draft_source, int(native_trend),
-                    now, now, now,
+                    direction, now, now, now,
                 ),
             )
             row = connection.execute(
                 "SELECT id FROM topic_clusters WHERE fingerprint=?", (fingerprint,)
             ).fetchone()
             cluster_id = int(row["id"])
+            if replace_posts:
+                connection.execute(
+                    "DELETE FROM topic_cluster_posts WHERE cluster_id=?", (cluster_id,)
+                )
             connection.executemany(
                 """
                 INSERT INTO topic_cluster_posts(cluster_id, post_id, relevance, observed_at)
@@ -1806,6 +2120,8 @@ class Store:
         *,
         status: str = "pending",
         lifecycle: str = "all",
+        direction: str = "all",
+        platform: str = "all",
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         sql = """
@@ -1827,6 +2143,16 @@ class Store:
         if lifecycle != "all":
             sql += " AND tc.lifecycle=?"
             params.append(lifecycle)
+        if direction != "all":
+            sql += " AND tc.direction=?"
+            params.append(direction)
+        if platform != "all":
+            sql += (
+                " AND EXISTS (SELECT 1 FROM topic_cluster_posts tcp2 "
+                "JOIN posts p2 ON p2.id=tcp2.post_id "
+                "WHERE tcp2.cluster_id=tc.id AND p2.platform=?)"
+            )
+            params.append(platform)
         sql += " ORDER BY tc.heat_score DESC, tc.last_seen_at DESC LIMIT ?"
         params.append(max(1, min(limit, 500)))
         with self.connection() as connection:
@@ -1890,3 +2216,981 @@ class Store:
                     utc_now(), cluster_id,
                 ),
             )
+
+    # Multi-platform account pool and outbound workflow.
+    def upsert_managed_account(
+        self,
+        *,
+        platform: str,
+        external_account_id: str,
+        username: str,
+        browser_profile: str,
+        roles: list[str],
+        display_name: str | None = None,
+        comment_daily_limit: int = 10,
+        comment_hourly_limit: int = 3,
+        dm_daily_limit: int = 5,
+        dm_hourly_limit: int = 2,
+    ) -> int:
+        if platform not in {"x", "xiaohongshu"}:
+            raise ValueError("Unsupported managed-account platform")
+        clean_roles = sorted(set(roles))
+        if not clean_roles or not set(clean_roles) <= {"engagement", "official_dm"}:
+            raise ValueError("Managed account requires engagement and/or official_dm role")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO managed_accounts(
+                    platform, external_account_id, username, display_name,
+                    browser_profile, roles_json, status, comment_daily_limit,
+                    comment_hourly_limit, dm_daily_limit, dm_hourly_limit,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, external_account_id) DO UPDATE SET
+                    username=excluded.username, display_name=excluded.display_name,
+                    browser_profile=excluded.browser_profile, roles_json=excluded.roles_json,
+                    comment_daily_limit=excluded.comment_daily_limit,
+                    comment_hourly_limit=excluded.comment_hourly_limit,
+                    dm_daily_limit=excluded.dm_daily_limit,
+                    dm_hourly_limit=excluded.dm_hourly_limit,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    platform,
+                    external_account_id,
+                    username.lstrip("@"),
+                    display_name,
+                    browser_profile,
+                    _json(clean_roles),
+                    max(1, comment_daily_limit),
+                    max(1, comment_hourly_limit),
+                    max(1, dm_daily_limit),
+                    max(1, dm_hourly_limit),
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT id FROM managed_accounts WHERE platform=? AND external_account_id=?",
+                (platform, external_account_id),
+            ).fetchone()
+        return int(row["id"])
+
+    @staticmethod
+    def _decode_managed_account(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            value["roles"] = json.loads(value.pop("roles_json") or "[]")
+        except json.JSONDecodeError:
+            value["roles"] = []
+        return value
+
+    def list_managed_accounts(self, platform: str = "all") -> list[dict[str, Any]]:
+        sql = "SELECT * FROM managed_accounts"
+        params: list[Any] = []
+        if platform != "all":
+            sql += " WHERE platform=?"
+            params.append(platform)
+        sql += " ORDER BY platform, username"
+        with self.connection() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [self._decode_managed_account(row) for row in rows]
+
+    def get_managed_account(self, account_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM managed_accounts WHERE id=?", (account_id,)
+            ).fetchone()
+        return self._decode_managed_account(row) if row else None
+
+    def set_managed_account_status(
+        self, account_id: int, status: str, *, actor: str, reason: str | None = None
+    ) -> None:
+        if status not in {"active", "paused", "disabled"}:
+            raise ValueError("Invalid managed-account status")
+        with self.connection() as connection:
+            cursor = connection.execute(
+                "UPDATE managed_accounts SET status=?, last_health_error=?, updated_at=? WHERE id=?",
+                (status, reason, utc_now(), account_id),
+            )
+            if not cursor.rowcount:
+                raise KeyError(account_id)
+        self.audit(actor, "managed_account.status", "managed_account", str(account_id), {
+            "status": status,
+            "reason": reason,
+        })
+
+    def save_managed_account_health(
+        self, account_id: int, *, ready: bool, error: str | None = None
+    ) -> None:
+        now = utc_now()
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT consecutive_failures FROM managed_accounts WHERE id=?", (account_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(account_id)
+            failures = 0 if ready else int(row["consecutive_failures"] or 0) + 1
+            status = "disabled" if failures >= 3 else None
+            connection.execute(
+                """
+                UPDATE managed_accounts SET consecutive_failures=?, last_health_at=?,
+                    last_health_error=?, status=COALESCE(?, status), updated_at=?
+                WHERE id=?
+                """,
+                (failures, now, error, status, now, account_id),
+            )
+
+    def create_outbound_action(
+        self,
+        *,
+        kind: str,
+        platform: str,
+        managed_account_id: int,
+        target_external_id: str,
+        draft: str,
+        idempotency_key: str,
+        target_url: str | None = None,
+        target_author_id: str | None = None,
+        conversation_id: str | None = None,
+        actor: str = "admin",
+    ) -> int:
+        if kind not in {"comment", "dm"}:
+            raise ValueError("Invalid outbound action kind")
+        account = self.get_managed_account(managed_account_id)
+        if not account or account["platform"] != platform:
+            raise ValueError("Managed account does not match target platform")
+        required_role = "engagement" if kind == "comment" else "official_dm"
+        if required_role not in account["roles"]:
+            raise ValueError(f"Managed account lacks {required_role} role")
+        if self.is_do_not_contact(platform, target_author_id or target_external_id):
+            raise ValueError("Target is on the do-not-contact list")
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO outbound_actions(
+                    kind, platform, managed_account_id, target_external_id,
+                    target_url, target_author_id, conversation_id, draft, status,
+                    idempotency_key, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
+                """,
+                (
+                    kind,
+                    platform,
+                    managed_account_id,
+                    target_external_id,
+                    target_url,
+                    target_author_id,
+                    conversation_id,
+                    draft.strip(),
+                    idempotency_key,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT id FROM outbound_actions WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+        action_id = int(row["id"])
+        self.audit(actor, "outbound.create", "outbound_action", str(action_id), {
+            "kind": kind,
+            "platform": platform,
+            "target_external_id": target_external_id,
+        })
+        return action_id
+
+    @staticmethod
+    def _decode_outbound_action(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        value = dict(row)
+        try:
+            value["receipt"] = json.loads(value.pop("receipt_json") or "{}")
+        except json.JSONDecodeError:
+            value["receipt"] = {}
+        if "roles_json" in value:
+            try:
+                value["managed_roles"] = json.loads(value.pop("roles_json") or "[]")
+            except json.JSONDecodeError:
+                value["managed_roles"] = []
+        return value
+
+    def get_outbound_action(self, action_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT oa.*, ma.username AS managed_username,
+                       ma.external_account_id AS managed_external_account_id,
+                       ma.browser_profile, ma.roles_json, ma.status AS managed_account_status,
+                       ma.comment_daily_limit, ma.comment_hourly_limit,
+                       ma.dm_daily_limit, ma.dm_hourly_limit
+                FROM outbound_actions oa
+                JOIN managed_accounts ma ON ma.id=oa.managed_account_id
+                WHERE oa.id=?
+                """,
+                (action_id,),
+            ).fetchone()
+        return self._decode_outbound_action(row) if row else None
+
+    def list_outbound_actions(
+        self, *, status: str = "all", kind: str = "all", limit: int = 100
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT oa.*, ma.username AS managed_username, ma.browser_profile,
+                   ma.roles_json, ma.status AS managed_account_status
+            FROM outbound_actions oa JOIN managed_accounts ma ON ma.id=oa.managed_account_id
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if status != "all":
+            sql += " AND oa.status=?"
+            params.append(status)
+        if kind != "all":
+            sql += " AND oa.kind=?"
+            params.append(kind)
+        sql += " ORDER BY oa.id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.connection() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [self._decode_outbound_action(row) for row in rows]
+
+    def approve_outbound_action(
+        self, action_id: int, *, final_text: str, actor: str
+    ) -> None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT status FROM outbound_actions WHERE id=?", (action_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(action_id)
+            if row["status"] not in {"draft", "failed"}:
+                raise ValueError("Only draft or failed actions can be approved")
+            connection.execute(
+                """
+                UPDATE outbound_actions SET status='approved', final_text=?,
+                    approved_by=?, approved_at=?, error=NULL, updated_at=? WHERE id=?
+                """,
+                (final_text.strip(), actor, utc_now(), utc_now(), action_id),
+            )
+        self.audit(actor, "outbound.approve", "outbound_action", str(action_id), {
+            "text": final_text.strip(),
+        })
+
+    def claim_outbound_action(self, action_id: int) -> dict[str, Any]:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM outbound_actions WHERE id=?", (action_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(action_id)
+            if row["status"] != "approved":
+                raise ValueError("Outbound action is not approved")
+            connection.execute(
+                "UPDATE outbound_actions SET status='sending', started_at=?, updated_at=? WHERE id=?",
+                (utc_now(), utc_now(), action_id),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        action = self.get_outbound_action(action_id)
+        if not action:
+            raise KeyError(action_id)
+        return action
+
+    def finish_outbound_action(
+        self,
+        action_id: int,
+        *,
+        status: str,
+        receipt_url: str | None = None,
+        receipt_external_id: str | None = None,
+        receipt: dict[str, Any] | None = None,
+        error: str | None = None,
+        actor: str = "system",
+    ) -> None:
+        if status not in {
+            "sent",
+            "confirmation_required",
+            "failed",
+            "cancelled",
+            "target_not_messageable",
+        }:
+            raise ValueError("Invalid outbound completion status")
+        now = utc_now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE outbound_actions SET status=?, sent_at=?, receipt_url=?,
+                    receipt_external_id=?, receipt_json=?, error=?, updated_at=? WHERE id=?
+                """,
+                (
+                    status,
+                    now if status == "sent" else None,
+                    receipt_url,
+                    receipt_external_id,
+                    _json(receipt or {}),
+                    error,
+                    now,
+                    action_id,
+                ),
+            )
+            if not cursor.rowcount:
+                raise KeyError(action_id)
+        self.audit(actor, f"outbound.{status}", "outbound_action", str(action_id), {
+            "receipt_url": receipt_url,
+            "error": error,
+        })
+
+    def outbound_usage(self, managed_account_id: int, kind: str) -> dict[str, int]:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN sent_at >= datetime('now', '-1 hour') THEN 1 ELSE 0 END) AS hourly,
+                    SUM(CASE WHEN sent_at >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS daily
+                FROM outbound_actions
+                WHERE managed_account_id=? AND kind=? AND status='sent'
+                """,
+                (managed_account_id, kind),
+            ).fetchone()
+        return {"hourly": int(row["hourly"] or 0), "daily": int(row["daily"] or 0)}
+
+    def has_recent_author_contact(
+        self, *, platform: str, target_author_id: str, days: int, kind: str | None = None
+    ) -> bool:
+        sql = """
+            SELECT 1 FROM outbound_actions
+            WHERE platform=? AND target_author_id=? AND status='sent'
+              AND sent_at >= datetime('now', ?)
+        """
+        params: list[Any] = [platform, target_author_id, f"-{max(1, days)} days"]
+        if kind:
+            sql += " AND kind=?"
+            params.append(kind)
+        sql += " LIMIT 1"
+        with self.connection() as connection:
+            return connection.execute(sql, params).fetchone() is not None
+
+    def has_sent_target(self, *, platform: str, kind: str, target_external_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM outbound_actions
+                WHERE platform=? AND kind=? AND target_external_id=? AND status='sent'
+                LIMIT 1
+                """,
+                (platform, kind, target_external_id),
+            ).fetchone()
+        return row is not None
+
+    def add_do_not_contact(
+        self, *, platform: str, target_external_id: str, reason: str, actor: str
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO do_not_contact(
+                    platform, target_external_id, reason, created_by, created_at
+                ) VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(platform, target_external_id) DO UPDATE SET
+                    reason=excluded.reason, created_by=excluded.created_by,
+                    created_at=excluded.created_at
+                """,
+                (platform, target_external_id, reason, actor, utc_now()),
+            )
+        self.audit(actor, "do_not_contact.add", "target", f"{platform}:{target_external_id}", {
+            "reason": reason,
+        })
+
+    def is_do_not_contact(self, platform: str, target_external_id: str) -> bool:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM do_not_contact WHERE platform=? AND target_external_id=?",
+                (platform, target_external_id),
+            ).fetchone()
+        return row is not None
+
+    def audit(
+        self,
+        actor: str,
+        action: str,
+        object_type: str,
+        object_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO audit_events(
+                    actor, action, object_type, object_id, payload_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (actor, action, object_type, object_id, _json(payload or {}), utc_now()),
+            )
+
+    def list_audit_events(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM audit_events ORDER BY id DESC LIMIT ?",
+                (max(1, min(limit, 1000)),),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            try:
+                value["payload"] = json.loads(value.pop("payload_json") or "{}")
+            except json.JSONDecodeError:
+                value["payload"] = {}
+            output.append(value)
+        return output
+
+    def get_control(self, key: str, default: str = "") -> str:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM system_controls WHERE key=?", (key,)
+            ).fetchone()
+        return str(row["value"]) if row else default
+
+    def set_control(self, key: str, value: str, *, actor: str) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO system_controls(key, value, updated_by, updated_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+                    updated_by=excluded.updated_by, updated_at=excluded.updated_at
+                """,
+                (key, value, actor, utc_now()),
+            )
+        self.audit(actor, "control.set", "system_control", key, {"value": value})
+
+    def list_trend_categories(self, enabled_only: bool = True) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM trend_categories"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY slug"
+        with self.connection() as connection:
+            rows = connection.execute(sql).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            try:
+                value["keywords"] = json.loads(value.pop("keywords_json") or "[]")
+            except json.JSONDecodeError:
+                value["keywords"] = []
+            output.append(value)
+        return output
+
+    def upsert_conversation(
+        self,
+        *,
+        platform: str,
+        managed_account_id: int,
+        participant_external_id: str,
+        participant_name: str | None = None,
+        external_conversation_id: str | None = None,
+        last_message_at: str | None = None,
+    ) -> int:
+        now = utc_now()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    platform, managed_account_id, external_conversation_id,
+                    participant_external_id, participant_name, last_message_at,
+                    created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(platform, managed_account_id, participant_external_id)
+                DO UPDATE SET
+                    external_conversation_id=COALESCE(excluded.external_conversation_id,
+                                                      conversations.external_conversation_id),
+                    participant_name=COALESCE(excluded.participant_name,
+                                              conversations.participant_name),
+                    last_message_at=COALESCE(excluded.last_message_at,
+                                             conversations.last_message_at),
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    platform,
+                    managed_account_id,
+                    external_conversation_id,
+                    participant_external_id,
+                    participant_name,
+                    last_message_at,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id FROM conversations
+                WHERE platform=? AND managed_account_id=? AND participant_external_id=?
+                """,
+                (platform, managed_account_id, participant_external_id),
+            ).fetchone()
+        return int(row["id"])
+
+    def save_message(
+        self,
+        *,
+        conversation_id: int,
+        direction: str,
+        text: str,
+        external_message_id: str | None = None,
+        status: str = "observed",
+        sent_at: str | None = None,
+        raw: dict[str, Any] | None = None,
+    ) -> int:
+        if direction not in {"inbound", "outbound"}:
+            raise ValueError("Invalid message direction")
+        stable_external_id = external_message_id or hashlib.sha256(
+            f"{direction}:{text}:{sent_at or ''}".encode("utf-8")
+        ).hexdigest()
+        with self.connection() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO messages(
+                    conversation_id, external_message_id, direction, text,
+                    status, sent_at, raw_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_id,
+                    stable_external_id,
+                    direction,
+                    text,
+                    status,
+                    sent_at,
+                    _json(raw or {}),
+                    utc_now(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT id FROM messages WHERE conversation_id=? AND external_message_id=?",
+                (conversation_id, stable_external_id),
+            ).fetchone()
+        return int(row["id"])
+
+    def list_conversations(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT c.*, ma.username AS managed_username,
+                       (SELECT text FROM messages m WHERE m.conversation_id=c.id
+                        ORDER BY m.id DESC LIMIT 1) AS last_message
+                FROM conversations c JOIN managed_accounts ma ON ma.id=c.managed_account_id
+                ORDER BY COALESCE(c.last_message_at, c.updated_at) DESC LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    # Postiz-owned X publishing.
+    def sync_postiz_integrations(
+        self, integrations: list[dict[str, Any]], *, actor: str = "system"
+    ) -> int:
+        now = utc_now()
+        x_rows = [
+            row for row in integrations
+            if str(row.get("identifier") or "").lower() == "x" and row.get("id")
+        ]
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE postiz_integrations SET disabled=1, updated_at=? WHERE identifier='x'",
+                (now,),
+            )
+            for row in x_rows:
+                connection.execute(
+                    """
+                    INSERT INTO postiz_integrations(
+                        external_id, identifier, name, profile, picture, disabled,
+                        raw_json, captured_at, updated_at
+                    ) VALUES(?, 'x', ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(external_id) DO UPDATE SET
+                        identifier='x', name=excluded.name, profile=excluded.profile,
+                        picture=excluded.picture, disabled=excluded.disabled,
+                        raw_json=excluded.raw_json, captured_at=excluded.captured_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        str(row["id"]),
+                        str(row.get("name") or ""),
+                        str(row.get("profile") or "").lstrip("@"),
+                        row.get("picture"),
+                        int(bool(row.get("disabled"))),
+                        _json(row),
+                        now,
+                        now,
+                    ),
+                )
+            default = connection.execute(
+                """
+                SELECT external_id FROM postiz_integrations
+                WHERE identifier='x' AND disabled=0 AND is_default=1 LIMIT 1
+                """
+            ).fetchone()
+            if default is None:
+                first = connection.execute(
+                    """
+                    SELECT external_id FROM postiz_integrations
+                    WHERE identifier='x' AND disabled=0 ORDER BY profile, external_id LIMIT 1
+                    """
+                ).fetchone()
+                if first:
+                    default = first
+            if default:
+                connection.execute(
+                    """
+                    UPDATE postiz_integrations SET is_default=CASE WHEN external_id=? THEN 1 ELSE 0 END
+                    WHERE identifier='x'
+                    """,
+                    (default["external_id"],),
+                )
+            else:
+                connection.execute(
+                    "UPDATE postiz_integrations SET is_default=0 WHERE identifier='x'"
+                )
+        self.audit(actor, "postiz.integrations.sync", "postiz", "x", {"count": len(x_rows)})
+        return len(x_rows)
+
+    def list_postiz_integrations(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM postiz_integrations WHERE identifier='x'"
+        if enabled_only:
+            sql += " AND disabled=0"
+        sql += " ORDER BY is_default DESC, profile, external_id"
+        with self.connection() as connection:
+            rows = connection.execute(sql).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            try:
+                value["raw"] = json.loads(value.pop("raw_json") or "{}")
+            except json.JSONDecodeError:
+                value["raw"] = {}
+            output.append(value)
+        return output
+
+    def get_postiz_integration(self, external_id: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM postiz_integrations WHERE external_id=?", (external_id,)
+            ).fetchone()
+        if not row:
+            return None
+        value = dict(row)
+        try:
+            value["raw"] = json.loads(value.pop("raw_json") or "{}")
+        except json.JSONDecodeError:
+            value["raw"] = {}
+        return value
+
+    def set_default_postiz_integration(self, external_id: str, *, actor: str) -> None:
+        integration = self.get_postiz_integration(external_id)
+        if not integration or integration["disabled"]:
+            raise ValueError("Postiz X integration 不存在或已禁用")
+        with self.connection() as connection:
+            connection.execute("UPDATE postiz_integrations SET is_default=0 WHERE identifier='x'")
+            connection.execute(
+                "UPDATE postiz_integrations SET is_default=1, updated_at=? WHERE external_id=?",
+                (utc_now(), external_id),
+            )
+        self.audit(actor, "postiz.integration.default", "postiz_integration", external_id)
+
+    def create_owned_post(
+        self,
+        *,
+        integration_id: str,
+        items: list[str],
+        media: list[dict[str, Any]] | None = None,
+        source_type: str = "manual",
+        source_cluster_id: int | None = None,
+        mode: str = "now",
+        timezone_name: str = "Asia/Shanghai",
+        scheduled_at_local: str | None = None,
+        scheduled_at_utc: str | None = None,
+        who_can_reply: str = "everyone",
+        made_with_ai: bool = False,
+        actor: str = "admin",
+    ) -> int:
+        if source_type not in {"manual", "trend"}:
+            raise ValueError("Invalid owned-post source")
+        if mode not in {"now", "schedule"}:
+            raise ValueError("Invalid owned-post mode")
+        if mode == "schedule" and not (scheduled_at_local and scheduled_at_utc):
+            raise ValueError("定时发布必须同时保存北京时间和 UTC 时间")
+        if who_can_reply not in {"everyone", "following", "mentionedUsers", "subscribers", "verified"}:
+            raise ValueError("Invalid X reply setting")
+        cleaned = [str(item).strip() for item in items]
+        if not cleaned or any(not item for item in cleaned):
+            raise ValueError("帖子或线程内容不能为空")
+        integration = self.get_postiz_integration(integration_id)
+        if not integration or integration["disabled"]:
+            raise ValueError("Postiz X integration 不存在或已禁用")
+        now = utc_now()
+        for row in media or []:
+            if str(row.get("source_type") or "") not in {"local", "url"}:
+                raise ValueError("Invalid owned-post media source")
+            if int(row.get("item_position") or 0) not in range(len(cleaned)):
+                raise ValueError("媒体所属线程段无效")
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO owned_posts(
+                    source_type, source_cluster_id, integration_id, mode, timezone,
+                    scheduled_at_local, scheduled_at_utc, who_can_reply, made_with_ai,
+                    status, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+                """,
+                (
+                    source_type, source_cluster_id, integration_id, mode, timezone_name,
+                    scheduled_at_local, scheduled_at_utc, who_can_reply,
+                    int(made_with_ai), now, now,
+                ),
+            )
+            post_id = int(cursor.lastrowid)
+            connection.executemany(
+                "INSERT INTO owned_post_items(owned_post_id, position, content) VALUES(?, ?, ?)",
+                [(post_id, position, content) for position, content in enumerate(cleaned)],
+            )
+            for row in media or []:
+                connection.execute(
+                    """
+                    INSERT INTO owned_post_media(
+                        owned_post_id, item_position, source_type, source_value,
+                        filename, content_type, storage_path, status, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        post_id,
+                        int(row.get("item_position") or 0),
+                        str(row["source_type"]),
+                        str(row["source_value"]),
+                        row.get("filename"),
+                        row.get("content_type"),
+                        row.get("storage_path"),
+                        now,
+                        now,
+                    ),
+                )
+        self.audit(actor, "owned_post.create", "owned_post", str(post_id), {
+            "source_type": source_type, "integration_id": integration_id, "mode": mode
+        })
+        return post_id
+
+    def get_owned_post(self, post_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT op.*, pi.name AS integration_name, pi.profile AS integration_profile,
+                       pi.picture AS integration_picture, pi.disabled AS integration_disabled
+                FROM owned_posts op
+                JOIN postiz_integrations pi ON pi.external_id=op.integration_id
+                WHERE op.id=?
+                """,
+                (post_id,),
+            ).fetchone()
+            if not row:
+                return None
+            items = connection.execute(
+                "SELECT * FROM owned_post_items WHERE owned_post_id=? ORDER BY position",
+                (post_id,),
+            ).fetchall()
+            media = connection.execute(
+                "SELECT * FROM owned_post_media WHERE owned_post_id=? ORDER BY item_position, id",
+                (post_id,),
+            ).fetchall()
+        value = dict(row)
+        try:
+            value["receipt"] = json.loads(value.pop("receipt_json") or "{}")
+        except json.JSONDecodeError:
+            value["receipt"] = {}
+        value["items"] = [dict(item) for item in items]
+        value["media"] = [dict(item) for item in media]
+        return value
+
+    def update_owned_post_draft(
+        self,
+        post_id: int,
+        *,
+        integration_id: str,
+        items: list[str],
+        media: list[dict[str, Any]],
+        mode: str,
+        timezone_name: str,
+        scheduled_at_local: str | None,
+        scheduled_at_utc: str | None,
+        who_can_reply: str,
+        made_with_ai: bool,
+        actor: str,
+    ) -> None:
+        integration = self.get_postiz_integration(integration_id)
+        if not integration or integration["disabled"]:
+            raise ValueError("Postiz X integration 不存在或已禁用")
+        cleaned = [str(item).strip() for item in items]
+        if not cleaned or any(not item for item in cleaned):
+            raise ValueError("帖子或线程内容不能为空")
+        if mode not in {"now", "schedule"}:
+            raise ValueError("Invalid owned-post mode")
+        if mode == "schedule" and not (scheduled_at_local and scheduled_at_utc):
+            raise ValueError("定时发布必须同时保存北京时间和 UTC 时间")
+        if who_can_reply not in {"everyone", "following", "mentionedUsers", "subscribers", "verified"}:
+            raise ValueError("Invalid X reply setting")
+        for media_row in media:
+            if str(media_row.get("source_type") or "") not in {"local", "url"}:
+                raise ValueError("Invalid owned-post media source")
+            if int(media_row.get("item_position") or 0) not in range(len(cleaned)):
+                raise ValueError("媒体所属线程段无效")
+        now = utc_now()
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT status FROM owned_posts WHERE id=?", (post_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(post_id)
+            if row["status"] not in {"draft", "failed"}:
+                raise ValueError("只有草稿或明确失败的帖子可编辑")
+            connection.execute(
+                """
+                UPDATE owned_posts SET integration_id=?, mode=?, timezone=?,
+                    scheduled_at_local=?, scheduled_at_utc=?, who_can_reply=?,
+                    made_with_ai=?, status='draft', idempotency_key=NULL,
+                    approved_by=NULL, approved_at=NULL, error=NULL, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    integration_id, mode, timezone_name, scheduled_at_local,
+                    scheduled_at_utc, who_can_reply, int(made_with_ai), now, post_id,
+                ),
+            )
+            connection.execute("DELETE FROM owned_post_items WHERE owned_post_id=?", (post_id,))
+            connection.execute("DELETE FROM owned_post_media WHERE owned_post_id=?", (post_id,))
+            connection.executemany(
+                "INSERT INTO owned_post_items(owned_post_id, position, content) VALUES(?, ?, ?)",
+                [(post_id, position, content) for position, content in enumerate(cleaned)],
+            )
+            for media_row in media:
+                connection.execute(
+                    """
+                    INSERT INTO owned_post_media(
+                        owned_post_id, item_position, source_type, source_value,
+                        filename, content_type, storage_path, status, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (
+                        post_id, int(media_row.get("item_position") or 0),
+                        str(media_row["source_type"]), str(media_row["source_value"]),
+                        media_row.get("filename"), media_row.get("content_type"),
+                        media_row.get("storage_path"), now, now,
+                    ),
+                )
+        self.audit(actor, "owned_post.update", "owned_post", str(post_id))
+
+    def list_owned_posts(self, *, status: str = "all", limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT id FROM owned_posts"
+        params: list[Any] = []
+        if status != "all":
+            sql += " WHERE status=?"
+            params.append(status)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self.connection() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [post for row in rows if (post := self.get_owned_post(int(row["id"]))) is not None]
+
+    def approve_owned_post(self, post_id: int, *, idempotency_key: str, actor: str) -> None:
+        now = utc_now()
+        try:
+            with self.connection() as connection:
+                row = connection.execute(
+                    "SELECT status FROM owned_posts WHERE id=?", (post_id,)
+                ).fetchone()
+                if not row:
+                    raise KeyError(post_id)
+                if row["status"] not in {"draft", "failed"}:
+                    raise ValueError("只有草稿或明确失败的帖子可审批")
+                connection.execute(
+                    """
+                    UPDATE owned_posts SET status='approved', idempotency_key=?,
+                        approved_by=?, approved_at=?, error=NULL, updated_at=? WHERE id=?
+                    """,
+                    (idempotency_key, actor, now, now, post_id),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("相同账号、内容和发布时间的帖子已存在") from exc
+        self.audit(actor, "owned_post.approve", "owned_post", str(post_id))
+
+    def claim_owned_post(self, post_id: int) -> dict[str, Any]:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT status FROM owned_posts WHERE id=?", (post_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(post_id)
+            if row["status"] != "approved":
+                raise ValueError("帖子尚未逐条审批")
+            connection.execute(
+                "UPDATE owned_posts SET status='submitting', submitted_at=?, updated_at=? WHERE id=?",
+                (utc_now(), utc_now(), post_id),
+            )
+        claimed = self.get_owned_post(post_id)
+        if claimed is None:
+            raise KeyError(post_id)
+        return claimed
+
+    def update_owned_media_result(
+        self,
+        media_id: int,
+        *,
+        status: str,
+        asset_id: str | None = None,
+        asset_path: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                """
+                UPDATE owned_post_media SET status=?, postiz_asset_id=?,
+                    postiz_asset_path=?, error=?, updated_at=? WHERE id=?
+                """,
+                (status, asset_id, asset_path, error, utc_now(), media_id),
+            )
+
+    def finish_owned_post(
+        self,
+        post_id: int,
+        *,
+        status: str,
+        postiz_post_id: str | None = None,
+        release_url: str | None = None,
+        receipt: dict[str, Any] | list[Any] | None = None,
+        error: str | None = None,
+        actor: str = "system",
+    ) -> None:
+        if status not in {"scheduled", "published", "confirmation_required", "failed", "paused", "cancelled"}:
+            raise ValueError("Invalid owned-post completion status")
+        now = utc_now()
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE owned_posts SET status=?,
+                    postiz_post_id=COALESCE(?, postiz_post_id),
+                    release_url=COALESCE(?, release_url), receipt_json=?, error=?,
+                    published_at=CASE WHEN ?='published' THEN ? ELSE published_at END,
+                    updated_at=? WHERE id=?
+                """,
+                (
+                    status, postiz_post_id, release_url, _json(receipt or {}), error,
+                    status, now, now, post_id,
+                ),
+            )
+            if not cursor.rowcount:
+                raise KeyError(post_id)
+        self.audit(actor, f"owned_post.{status}", "owned_post", str(post_id), {
+            "postiz_post_id": postiz_post_id, "release_url": release_url, "error": error
+        })

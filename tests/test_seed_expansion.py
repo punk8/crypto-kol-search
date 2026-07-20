@@ -18,7 +18,12 @@ from kol_search.twitter.base import TwitterBackendError
 def test_mock_seed_build_and_expand_is_exact_and_explainable(tmp_path: Path):
     path = tmp_path / "seed.db"
     store = Store(path)
-    settings = Settings(_env_file=None, TWITTER_BACKEND="mock", KOL_DB_PATH=str(path))
+    settings = Settings(
+        _env_file=None,
+        TWITTER_BACKEND="mock",
+        KOL_ENABLE_MOCK_BACKEND=True,
+        KOL_DB_PATH=str(path),
+    )
     pipeline = SeedPipeline(store, settings)
 
     build_run_id = store.create_run(query="seed build", backend="mock", kind="seed_build", config={})

@@ -185,3 +185,22 @@ def test_brand_reply_and_topic_workflows(tmp_path: Path):
     )
     store.update_topic_cluster(cluster_id, status="adopted", draft="Human topic draft")
     assert store.list_topic_clusters(status="adopted")[0]["draft"] == "Human topic draft"
+    store.upsert_topic_cluster(
+        fingerprint="topic:defi",
+        title="DeFi refreshed",
+        summary="Latest snapshot",
+        language="en",
+        lifecycle="declining",
+        heat_score=20,
+        metrics={"post_count": 0, "unique_authors": 0},
+        outline="Generated replacement",
+        draft="Generated replacement",
+        draft_source="rules",
+        native_trend=False,
+        post_ids=[],
+        replace_posts=True,
+    )
+    refreshed = store.get_topic_cluster(cluster_id)
+    assert refreshed is not None
+    assert refreshed["posts"] == []
+    assert refreshed["draft"] == "Human topic draft"
