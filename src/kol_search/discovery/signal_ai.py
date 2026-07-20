@@ -8,8 +8,10 @@ from pydantic import BaseModel, Field
 
 
 class ReplyDraftResult(BaseModel):
-    draft: str
-    angle: str
+    suitable: bool = True
+    reason: str = "Relevant to the campaign goal"
+    draft: str | None = None
+    angle: str | None = None
 
 
 class TopicDraftResult(BaseModel):
@@ -50,6 +52,12 @@ def generate_reply_draft(
     *,
     post: dict[str, Any],
     brand: dict[str, Any],
+    kol: dict[str, Any] | None = None,
+    recent_context: list[dict[str, Any]] | None = None,
+    sender: dict[str, Any] | None = None,
+    comment_style: str = "brand",
+    campaign_goal: str = "Introduce LaunchVibes when directly relevant",
+    conversation_context: list[dict[str, Any]] | None = None,
     language: str,
     api_key: str,
     model: str,
@@ -57,8 +65,19 @@ def generate_reply_draft(
     cache_set: Callable[[str, dict], None] | None = None,
 ) -> ReplyDraftResult:
     payload = {
-        "post": {"author": post.get("author_username"), "text": post.get("text")},
+        "post": {
+            "author": post.get("author_username"),
+            "text": post.get("text"),
+            "url": post.get("url"),
+            "conversation_id": post.get("conversation_id"),
+        },
+        "conversation_context": (conversation_context or [])[:5],
+        "kol": kol or {},
+        "recent_kol_context": (recent_context or [])[:5],
         "brand": brand,
+        "sender": sender or {},
+        "comment_style": comment_style,
+        "campaign_goal": campaign_goal,
         "language": language,
     }
     key = _cache_key("reply", model, payload)
@@ -72,11 +91,15 @@ def generate_reply_draft(
             {
                 "role": "system",
                 "content": (
-                    "Draft one thoughtful X reply for a crypto project brand. Optimize for a "
-                    "genuine relationship, not promotion. Follow the requested language and brand "
-                    "tone. Ground every claim in the source post or allowed claims. Never invent "
-                    "facts, metrics, partnerships, or product capabilities. Avoid forbidden terms. "
-                    "Keep the reply under 260 characters and return the requested structure."
+                    "Decide whether the supplied X post is genuinely suitable for a LaunchVibes "
+                    "reply. If unrelated to creator growth, content planning, or creator workflow, "
+                    "return suitable=false, explain why, and return no draft. Otherwise draft one "
+                    "relevant reply grounded in the original post and supplied context. Brand style "
+                    "may directly promote the product. Conversational style changes tone only: it "
+                    "must never hide affiliation or pretend to be an independent ordinary user. "
+                    "Never invent product use, testimonials, results, metrics, partnerships, claims, "
+                    "or social proof. Use only permitted claims, avoid forbidden wording, follow the "
+                    "requested language, and keep the reply under 260 characters."
                 ),
             },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},

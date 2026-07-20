@@ -51,6 +51,7 @@ def _queued_opportunity(store: Store, post_id: str = "post-1") -> int:
         draft="Which liquidity metric are you watching next?",
         draft_source="rules",
         expires_at="2026-07-17T01:00:00+00:00",
+        initial_status="validated",
     )
 
 

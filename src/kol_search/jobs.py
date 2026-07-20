@@ -10,6 +10,7 @@ from kol_search.db import Store
 from kol_search.discovery.pipeline import DiscoveryPipeline
 from kol_search.discovery.seed_pipeline import SeedPipeline
 from kol_search.discovery.signals import SignalPipeline
+from kol_search.outreach import DMBatchProcessor
 from kol_search.settings import Settings
 
 
@@ -23,6 +24,7 @@ class JobWorker:
         self.pipeline = DiscoveryPipeline(store, settings)
         self.seed_pipeline = SeedPipeline(store, settings)
         self.signal_pipeline = SignalPipeline(store, settings)
+        self.dm_processor = DMBatchProcessor(store, settings)
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
@@ -31,6 +33,8 @@ class JobWorker:
         if self._thread and self._thread.is_alive():
             return
         self.store.interrupt_running_jobs()
+        self.store.interrupt_sending_dm_messages()
+        self.store.interrupt_publishing_replies()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="kol-job-worker", daemon=True)
         self._thread.start()
@@ -48,6 +52,8 @@ class JobWorker:
         while not self._stop.is_set():
             job = self.store.claim_next_job()
             if not job:
+                if self.dm_processor.process_one():
+                    continue
                 self._wake.wait(1)
                 self._wake.clear()
                 continue

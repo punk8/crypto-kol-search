@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}X Senders{% endblock %}
+{% block content %}
+<section class="run-head">
+  <div>
+    <p class="eyebrow">AUTHORIZED ACCOUNTS</p>
+    <h1>X Senders</h1>
+    <p>只保存账号标签与发送配置；不保存 token、cookie、密码或浏览器会话。</p>
+  </div>
+</section>
+
+{% if not official_dm_ready %}<div class="notice warning"><strong>REAL X DM BLOCKED</strong> — {{ official_dm_reason }}。mock 表示 dry run，不是 X 发送；测试中的 mock success 也不是真实发送。</div>{% endif %}
+
+<section class="card sender-create">
+  <h2>新增发送账号</h2>
+  <p class="field-note">创建一个新的 X sender 配置。这里只保存账号标识与发送设置，不保存密码、token、cookie 或浏览器会话。</p>
+  <form action="/settings/x-senders" method="post" class="form-grid sender-form" data-sender-form>
+    <label>标签
+      <input name="label" placeholder="例如：LaunchVibes Official" required>
+      <small class="field-note">仅用于系统内识别，不会显示在 X 上。</small>
+    </label>
+    <label>X handle
+      <input name="x_handle" placeholder="例如：@launchvibes" required>
+      <small class="field-note">填写实际 X 用户名，用于审计与 sender 验证。</small>
+    </label>
+    <label>账号类型
+      <select name="sender_type">
+        <option value="brand">brand</option>
+        <option value="founder">founder</option>
+        <option value="employee">employee</option>
+        <option value="creator_partner">creator partner</option>
+        <option value="community">community</option>
+      </select>
+    </label>
+    <label>发送方式
+      <select name="send_method" data-send-method>
+        <option value="mock">mock / dry run</option>
+        <option value="opencli_reply">OpenCLI reply</option>
+        <option value="official_x_dm">official X DM（当前阻塞）</option>
+        <option value="disabled">disabled</option>
+      </select>
+    </label>
+    <label data-opencli-only hidden>OpenCLI profile
+      <input name="opencli_profile" placeholder="例如：launchvibes-test" data-opencli-profile>
+      <small class="field-note">用于该 sender 的评论发布和身份验证，与全局 discovery profile 分开；该 profile 必须已登录同一个 X 账号。</small>
+    </label>
+    <label>每日评论上限
+      <input name="daily_comment_limit" type="number" min="0" value="10">
+      <small class="field-note">仅统计真实发布，不统计 mock / dry run。测试阶段建议从 1 开始。</small>
+      <small class="field-note" data-comment-limit-inactive>当前发送方式不会使用此限制。</small>
+    </label>
+    <label>每日 DM 上限（当前未启用）
+      <input name="daily_dm_limit" type="number" min="0" value="10" readonly aria-disabled="true">
+      <small class="field-note">真实 X DM 接入后生效，当前 dry run 不计入此限制。</small>
+    </label>
+    <label class="check"><input type="checkbox" name="enabled" value="true" checked> 启用</label>
+    <label data-opencli-only hidden>Auto publish
+      <span class="check"><input type="checkbox" name="comment_auto_publish" value="true"> 允许评论自动发布</span>
+      <small class="field-note">验证通过后允许自动发布评论。首次使用建议关闭。</small>
+    </label>
+    <button type="submit">保存账号</button>
+  </form>
+</section>
+
+<div class="section-title">
+  <h2>已保存的发送账号</h2>
+  <p>查看、启用或修改现有 sender 配置。</p>
+</div>
+
+{% for sender in senders %}
+<details class="card sender-card">
+  <summary>
+    <span class="sender-identity"><strong>{{ sender.label }}</strong><small>@{{ sender.x_handle }}</small></span>
+    <span class="sender-summary"><span>{{ sender.sender_type }}</span><span>{{ sender.send_method }}</span><span class="status {% if sender.enabled %}verified{% else %}failed{% endif %}">{% if sender.enabled %}enabled{% else %}disabled{% endif %}</span><span>Auto publish: {% if sender.comment_auto_publish %}enabled{% else %}disabled{% endif %}</span><span>Comments/day: {{ sender.daily_comment_limit }}</span>{% if sender.send_method=='official_x_dm' and official_dm_ready %}<span>DM/day: {{ sender.daily_dm_limit }}</span>{% endif %}</span>
+    <span class="sender-edit-action">编辑</span>
+  </summary>
+  <div class="sender-edit">
+    <p class="eyebrow">编辑已保存账号</p>
+    <form action="/settings/x-senders" method="post" class="form-grid sender-form" data-sender-form>
+      <input type="hidden" name="sender_id" value="{{ sender.id }}">
+      <label>标签
+        <input name="label" value="{{ sender.label }}" placeholder="例如：LaunchVibes Official" required>
+        <small class="field-note">仅用于系统内识别，不会显示在 X 上。</small>
+      </label>
+      <label>X handle
+        <input name="x_handle" value="{{ sender.x_handle }}" placeholder="例如：@launchvibes" required>
+        <small class="field-note">填写实际 X 用户名，用于审计与 sender 验证。</small>
+      </label>
+      <label>账号类型
+        <select name="sender_type">{% for value in ['brand','founder','employee','creator_partner','community'] %}<option value="{{ value }}" {% if sender.sender_type==value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select>
+      </label>
+      <label>发送方式
+        <select name="send_method" data-send-method>
+          <option value="mock" {% if sender.send_method=='mock' %}selected{% endif %}>mock / dry run</option>
+          <option value="opencli_reply" {% if sender.send_method=='opencli_reply' %}selected{% endif %}>OpenCLI reply</option>
+          <option value="official_x_dm" {% if sender.send_method=='official_x_dm' %}selected{% endif %}>official X DM（当前阻塞）</option>
+          <option value="disabled" {% if sender.send_method=='disabled' %}selected{% endif %}>disabled</option>
+        </select>
+      </label>
+      <label data-opencli-only {% if sender.send_method!='opencli_reply' %}hidden{% endif %}>OpenCLI profile
+        <input name="opencli_profile" value="{{ sender.opencli_profile or '' }}" placeholder="例如：launchvibes-test" data-opencli-profile {% if sender.send_method=='opencli_reply' %}required{% endif %}>
+        <small class="field-note">用于该 sender 的评论发布和身份验证，与全局 discovery profile 分开；该 profile 必须已登录同一个 X 账号。</small>
+      </label>
+      <label>每日评论上限
+        <input name="daily_comment_limit" type="number" min="0" value="{{ sender.daily_comment_limit }}">
+        <small class="field-note">仅统计真实发布，不统计 mock / dry run。测试阶段建议从 1 开始。</small>
+        <small class="field-note" data-comment-limit-inactive {% if sender.send_method=='opencli_reply' %}hidden{% endif %}>当前发送方式不会使用此限制。</small>
+      </label>
+      <label>每日 DM 上限（当前未启用）
+        <input name="daily_dm_limit" type="number" min="0" value="{{ sender.daily_dm_limit }}" readonly aria-disabled="true">
+        <small class="field-note">真实 X DM 接入后生效，当前 dry run 不计入此限制。</small>
+      </label>
+      <label class="check"><input type="checkbox" name="enabled" value="true" {% if sender.enabled %}checked{% endif %}> 启用</label>
+      <label data-opencli-only {% if sender.send_method!='opencli_reply' %}hidden{% endif %}>Auto publish
+        <span class="check"><input type="checkbox" name="comment_auto_publish" value="true" {% if sender.comment_auto_publish %}checked{% endif %}> 允许评论自动发布</span>
+        <small class="field-note">验证通过后允许自动发布评论。首次使用建议关闭。</small>
+      </label>
+      <button type="submit">更新账号</button>
+      {% if sender.send_method=='opencli_reply' %}<button formaction="/settings/x-senders/{{ sender.id }}/verify">验证 whoami</button>{% endif %}
+    </form>
+  </div>
+</details>
+{% else %}
+<div class="card empty">还没有已保存的发送账号。</div>
+{% endfor %}
+
+<script>
+document.querySelectorAll("[data-sender-form]").forEach((form) => {
+  const method = form.querySelector("[data-send-method]");
+  const syncMethodFields = () => {
+    const opencli = method.value === "opencli_reply";
+    form.querySelectorAll("[data-opencli-only]").forEach((field) => {
+      field.hidden = !opencli;
+    });
+    const profile = form.querySelector("[data-opencli-profile]");
+    if (profile) profile.required = opencli;
+    const inactiveLimit = form.querySelector("[data-comment-limit-inactive]");
+    if (inactiveLimit) inactiveLimit.hidden = opencli;
+  };
+  method.addEventListener("change", syncMethodFields);
+  syncMethodFields();
+});
+</script>
+{% endblock %}

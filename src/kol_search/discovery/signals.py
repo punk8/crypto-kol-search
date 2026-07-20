@@ -19,9 +19,12 @@ from kol_search.discovery.signal_ai import (
     generate_topic_content,
 )
 from kol_search.models import Account, Post, TrendSignal
+from kol_search.outreach import validate_comment
+from kol_search.replies import ReplyOpportunityError, publish_validated_comment
 from kol_search.settings import Settings
 from kol_search.twitter.base import TwitterBackendError, merge_client_diagnostics
 from kol_search.twitter.factory import create_twitter_client
+from kol_search.twitter.reply import ReplyConfirmationRequiredError
 
 
 ProgressCallback = Callable[[int, str, dict, list[str]], None]
@@ -101,7 +104,9 @@ def _safe_log_ratio(value: float, reference: float) -> float:
     return min(1.0, max(0.0, math.log1p(max(0.0, value)) / math.log1p(reference)))
 
 
-def _sanitize_draft(draft: str, forbidden_terms: list[str]) -> str | None:
+def _sanitize_draft(draft: str | None, forbidden_terms: list[str]) -> str | None:
+    if not draft:
+        return None
     lowered = draft.lower()
     if any(term.strip() and term.strip().lower() in lowered for term in forbidden_terms):
         return None
@@ -160,6 +165,7 @@ class SignalPipeline:
                 stats,
                 warnings,
             )
+            self._auto_publish_replies(reply_ids, run, warnings)
             report(70, "topic_clustering")
             topic_ids = self._build_topic_queue(
                 trends, watch_accounts, brand, config, run, stats, warnings
@@ -337,6 +343,15 @@ class SignalPipeline:
         warnings: list[str],
     ) -> list[int]:
         now = self._now()
+        run_config = run.get("config") or {}
+        sender_id = run_config.get("sender_account_id")
+        sender = self.store.get_x_sender(int(sender_id)) if sender_id else None
+        comment_style = str(run_config.get("comment_style") or "brand")
+        publish_mode = str(run_config.get("publish_mode") or "review")
+        campaign_goal = str(
+            run_config.get("campaign_goal")
+            or "Introduce LaunchVibes only when directly relevant to the original post"
+        )
         account_by_id = {account.id: account for account in watch_accounts}
         topic_aliases = all_aliases(config)
         candidates: list[dict[str, Any]] = []
@@ -390,11 +405,14 @@ class SignalPipeline:
             language = _language(post.text, post.lang)
             topic_label = (topics[0].replace("_", " ") if topics else "this topic")
             if language == "zh":
-                rule_draft = f"这个观察很有启发。{topic_label}接下来最值得关注的变量是什么？"
-            else:
                 rule_draft = (
-                    f"Thoughtful take on {topic_label}. Which variable do you think matters most next?"
+                    f"你提到的 {topic_label} 很关键。我们在 LaunchVibes 也在帮助创作者"
+                    "把内容规划与增长工作流连接起来。"
                 )
+            else:
+                prefix = "We’re building LaunchVibes" if comment_style == "brand" else "I’m affiliated with LaunchVibes"
+                rule_draft = f"{topic_label.title()} is a real creator workflow challenge. {prefix} to make planning and growth work more connected."
+            suitable = bool(topics or overlap)
             candidates.append(
                 {
                     "post": post,
@@ -403,8 +421,13 @@ class SignalPipeline:
                     "score_payload": score_payload,
                     "reasons": reasons or ["来自重点 KOL 的相关内容"],
                     "language": language,
-                    "draft": rule_draft,
+                    "draft": rule_draft if suitable else "",
                     "draft_source": "rules",
+                    "suitable": suitable,
+                    "suitability_reason": (
+                        "The post overlaps the configured creator/product context"
+                        if suitable else "The post is not relevant enough to LaunchVibes"
+                    ),
                     "expires_at": (
                         created + timedelta(hours=self.settings.signal_opportunity_ttl_hours)
                     ).isoformat(),
@@ -418,9 +441,34 @@ class SignalPipeline:
             post = item["post"]
             if ai_enabled:
                 try:
+                    saved_kol = self.store.get_account(item["account"].id) or {}
+                    kol_context = item["account"].model_dump(exclude={"raw"})
+                    for source, target in (
+                        ("topics_json", "topics"), ("languages_json", "languages")
+                    ):
+                        try:
+                            kol_context[target] = json.loads(saved_kol.get(source) or "[]")
+                        except json.JSONDecodeError:
+                            kol_context[target] = []
+                    kol_context["summary"] = saved_kol.get("summary")
                     result = generate_reply_draft(
                         post=post.model_dump(exclude={"raw"}),
                         brand=brand,
+                        kol=kol_context,
+                        recent_context=[
+                            value.model_dump(exclude={"raw"})
+                            for value in timelines.get(item["account"].id, [])[:5]
+                        ],
+                        conversation_context=[
+                            value.model_dump(exclude={"raw"})
+                            for value in posts
+                            if post.conversation_id
+                            and value.conversation_id == post.conversation_id
+                            and value.id != post.id
+                        ][:5],
+                        sender=sender or {},
+                        comment_style=comment_style,
+                        campaign_goal=campaign_goal,
                         language=item["language"],
                         api_key=self.settings.openai_api_key or "",
                         model=run.get("model") or self.settings.openai_model,
@@ -431,14 +479,33 @@ class SignalPipeline:
                     if draft:
                         item["draft"] = draft
                         item["draft_source"] = "openai"
+                    item["suitable"] = result.suitable
+                    item["suitability_reason"] = result.reason
+                    if result.angle:
                         item["reasons"].append(result.angle)
                     stats["ai_calls"] += 1
                 except Exception as exc:
                     if len([value for value in warnings if value.startswith("reply AI")]) < 3:
                         warnings.append(f"reply AI @{post.author_username}: {exc}")
 
-        ids = [
-            self.store.upsert_reply_opportunity(
+        ids: list[int] = []
+        for item in selected:
+            valid, validation_reason = validate_comment(
+                post_text=item["post"].text,
+                draft=item["draft"],
+                suitable=bool(item["suitable"]),
+                style=comment_style,
+                sender_type=str((sender or {}).get("sender_type") or "brand"),
+                allowed_claims=brand.get("allowed_claims", []),
+                forbidden_terms=brand.get("forbidden_terms", []),
+            )
+            if publish_mode == "auto" and item["draft_source"] != "openai":
+                valid = False
+                validation_reason = "Auto publish requires an AI suitability assessment"
+            status = "unsuitable" if not item["suitable"] else (
+                "validated" if valid else "review_required"
+            )
+            ids.append(self.store.upsert_reply_opportunity(
                 post_id=item["post"].id,
                 account_id=item["account"].id,
                 score=item["score"],
@@ -449,11 +516,50 @@ class SignalPipeline:
                 draft_source=item["draft_source"],
                 expires_at=item["expires_at"],
                 observed_at=now.isoformat(),
-            )
-            for item in selected
-        ]
+                sender_account_id=int(sender_id) if sender_id else None,
+                comment_style=comment_style,
+                publish_mode=publish_mode,
+                campaign_goal=campaign_goal,
+                suitable=bool(item["suitable"]),
+                suitability_reason=item["suitability_reason"],
+                validation_status="passed" if valid else "failed",
+                validation_reason=validation_reason,
+                initial_status=status,
+            ))
         stats["reply_opportunities"] = len(ids)
         return ids
+
+    def _auto_publish_replies(
+        self, opportunity_ids: list[int], run: dict[str, Any], warnings: list[str]
+    ) -> None:
+        config = run.get("config") or {}
+        if config.get("publish_mode") != "auto" or not config.get("sender_account_id"):
+            return
+        sender = self.store.get_x_sender(int(config["sender_account_id"]))
+        if not sender or not sender["enabled"] or not sender["comment_auto_publish"]:
+            warnings.append("Comment auto-publish is disabled for the selected sender")
+            return
+        for opportunity_id in opportunity_ids:
+            item = self.store.get_reply_opportunity(opportunity_id)
+            if not item or item["status"] != "validated":
+                continue
+            try:
+                publish_validated_comment(self.store, self.settings, opportunity_id)
+            except ReplyConfirmationRequiredError:
+                warnings.append(f"Reply #{opportunity_id} requires manual confirmation")
+            except ReplyOpportunityError as exc:
+                self.store.update_reply_opportunity(
+                    opportunity_id,
+                    status="review_required",
+                    validation_status="failed",
+                    validation_reason=str(exc),
+                )
+                warnings.append(f"Reply #{opportunity_id} blocked: {exc}")
+            except TwitterBackendError as exc:
+                self.store.update_reply_opportunity(
+                    opportunity_id, status="failed",
+                )
+                warnings.append(f"Reply #{opportunity_id} failed: {exc}")
 
     def _build_topic_queue(
         self,

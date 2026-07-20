@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     signal_opportunity_ttl_hours: int = Field(
         default=24, alias="KOL_SIGNAL_OPPORTUNITY_TTL_HOURS"
     )
+    outreach_dm_window_days: int = Field(
+        default=30, ge=1, le=365, alias="KOL_OUTREACH_DM_WINDOW_DAYS"
+    )
+    outreach_comment_window_days: int = Field(
+        default=7, ge=1, le=365, alias="KOL_OUTREACH_COMMENT_WINDOW_DAYS"
+    )
+    launchvibes_url: str = Field(
+        default="https://launchvibes.com", alias="LAUNCHVIBES_URL"
+    )
 
     max_user_queries: int = Field(default=8, alias="KOL_MAX_USER_QUERIES")
     max_post_queries: int = Field(default=8, alias="KOL_MAX_POST_QUERIES")

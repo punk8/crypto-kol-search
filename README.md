@@ -46,7 +46,7 @@ TWITTER_FALLBACK_BACKEND=opencli
 kol-search discover "DeFi researcher" --backend opencli --limit 30
 ```
 
-项目按 OpenCLI 1.8.6 的命令接口集成，并显式使用 `OPENCLI_PROFILE` 指定的 Browser Bridge profile。Chrome 需要安装并连接 Browser Bridge、登录 X，并保持至少一个窗口打开。使用 `opencli profile list` 检查连接状态，再用 `opencli --profile ddd twitter search bitcoin --product live --limit 1 -f json` 做只读验证。浏览器关闭后，定时任务无法使用该后端或 fallback。
+项目按 OpenCLI 1.8.6 的命令接口集成。全局 `OPENCLI_PROFILE` 指定用于读取、发现和只读 fallback 的 Browser Bridge discovery profile；评论发布和登录身份验证使用 `/settings/x-senders` 中所选 sender 自己的 OpenCLI profile，两者相互独立。Chrome 需要安装并连接 Browser Bridge、登录 X，并保持至少一个窗口打开。使用 `opencli profile list` 检查连接状态，再用 `opencli --profile ddd twitter search bitcoin --product live --limit 1 -f json` 做只读验证。浏览器关闭后，定时任务无法使用该后端或 fallback。
 
 ## 人物雷达与趋势雷达
 
@@ -55,7 +55,7 @@ kol-search discover "DeFi researcher" --backend opencli --limit 30
 - `/radar/people`：从 approved KOL 时间线和主题搜索中生成回复机会、可编辑草稿与 24 小时处理窗口。
 - `/radar/topics`：按讨论增速、规模、独立作者和重点 KOL 参与生成热搜选题与单条 X 帖提纲。
 
-先在 `/settings/brand` 填写品牌名称、X handle、定位、语气和禁用表达，再到人物雷达手动运行一次信号扫描。系统不会自动发送回复或发布内容。OpenCLI Browser Bridge 就绪后，待处理项会显示“通过 OpenCLI 回复”；只有人工确认点击才会发送。发送后系统会读取品牌账号时间线确认真实回复链接，无法确认时进入“待确认”而不会自动重试。回填或确认实际回复链接后，启用自动信号扫描可在 1、6、24 小时复查互动和原作者回应。
+先在 `/settings/brand` 填写品牌名称、X handle、定位、语气和禁用表达，再到人物雷达手动运行一次信号扫描。review 模式只有人工确认点击才会发布；auto 模式仅在人物雷达明确选择、所选 sender 已启用 `comment_auto_publish`，且 suitability、validation、身份、去重、频率和每日限额检查全部通过后才会发布。发送后系统会读取 sender 账号时间线确认真实回复链接，无法确认时进入“待确认”而不会自动重试。回填或确认实际回复链接后，启用自动信号扫描可在 1、6、24 小时复查互动和原作者回应。
 
 自动扫描默认关闭。确认真实后端可用后，在 `.env` 设置：
 
@@ -63,6 +63,40 @@ kol-search discover "DeFi researcher" --backend opencli --limit 30
 KOL_ENABLE_SIGNAL_SCAN=true
 KOL_SIGNAL_INTERVAL_MINUTES=30
 ```
+
+## X Outreach
+
+`/settings/x-senders` 保存授权 X 账号的标签、handle、账号类型、发送方式和
+sender 专用 OpenCLI profile 标识，不保存 token、cookie、密码或浏览器会话。该 profile
+用于评论发布和 `twitter whoami` 身份验证，不使用全局 discovery profile。人物雷达支持
+`brand` 与 `conversational` 两种透明身份风格，以及人工 review 或发送账号显式启用的
+auto publish。评论同帖永久去重，同一 KOL 的推广评论默认间隔 7 天；同模板 DM 默认
+间隔 30 天。跨渠道的近期联系只显示警告，不单独构成硬阻止，但正在发送或结果不明确的
+记录仍会阻止并发发送。窗口由 `KOL_OUTREACH_DM_WINDOW_DAYS` 和
+`KOL_OUTREACH_COMMENT_WINDOW_DAYS` 配置。
+
+Comment auto-publish 不是独立调度器。操作员在人物雷达提交 `publish_mode=auto` 的
+手动 signal scan 后，现有 `JobWorker` 执行 `SignalPipeline`：扫描创建机会、生成并验证
+suitability 与草稿，然后在同一个 run 内调用现有 reply publisher。只有 sender 已启用
+`comment_auto_publish` 才会发布。操作员也可在网页把单条机会验证为 `auto`，该 POST 会
+立即走同一发布服务。定时 signal scan 当前不携带 sender 或 auto 配置，因此只生成队列，
+不会自动发布。数据库用原子状态转换 `validated → publishing` 防止重复执行；启动时遗留的
+`publishing` 会改为 `confirmation_required`，不会自动重试。被中断的整个 signal run 仍按
+既有行为标记 `interrupted`，不会自动续跑。
+
+真实评论写入前，SQLite `BEGIN IMMEDIATE` 事务同时检查去重、7 天窗口和每日限额并预留
+`publishing` 状态；DM worker 也在认领单条真实任务的事务中完成相同检查。每日限额计入
+`sending`/`publishing`、`confirmation_required` 和成功状态，排除失败与 dry run/mock。
+OpenCLI 评论还会先用 `twitter whoami` 确认当前登录账号与所选 sender 一致。
+
+DM Outreach 使用两个固定模板为每位 KOL 创建独立任务。当前真实 X DM 明确关闭：
+现有 official client 只使用 app-only `X_BEARER_TOKEN`，尚未实现并验证带 `dm.write`、
+`dm.read`、`tweet.read`、`users.read` scope 的 OAuth user-context 授权，也无法从仓库确认
+X App 的 DM write 权限与授权用户。OpenCLI `twitter reply-dm` 不是定向单人接口，因此
+不会使用。`mock` sender 只执行可审计 dry run，并显示
+`DRY RUN — NOT SENT TO X`；它不会增加 real sent、每日真实发送量、最近真实联系时间或
+重复联系阻止。测试注入的 mock success 同样不算真实发送。`official_x_dm` 会以 blocked
+原因明确失败，不会切换 provider、发送账号或自动重试。仓库当前没有真实 X DM 写入代码。
 
 ## 初始种子库
 
