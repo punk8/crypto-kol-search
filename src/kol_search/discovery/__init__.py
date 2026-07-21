@@ -1,3 +1,5 @@
-from kol_search.discovery.pipeline import DiscoveryPipeline
+"""Platform-owned discovery helpers shared only where semantics are universal."""
 
-__all__ = ["DiscoveryPipeline"]
+from kol_search.discovery.promotion import BalancedPromotionPolicy, KolStatus
+
+__all__ = ["BalancedPromotionPolicy", "KolStatus"]

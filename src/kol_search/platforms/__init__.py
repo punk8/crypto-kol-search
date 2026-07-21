@@ -1,4 +1,55 @@
-from kol_search.platforms.base import PlatformHealth, PlatformReader
-from kol_search.platforms.factory import create_platform_readers
+from kol_search.platforms.defaults import build_default_registry
+from kol_search.platforms.schema import install_registered_platform_schemas
+from kol_search.platforms.kernel import (
+    ActionExecutionResult,
+    NativeObjectReference,
+    PlatformActionHandler,
+    PlatformActionProposal,
+    PlatformAutomationAdapter,
+    PlatformAutomationAdapterNotRegisteredError,
+    PlatformCapability,
+    PlatformHandlerNotRegisteredError,
+    PlatformHealthCheck,
+    PlatformHealthResult,
+    PlatformManifest,
+    PlatformNotRegisteredError,
+    PlatformOpportunityProposal,
+    PlatformOutcomeUpdate,
+    PlatformPlugin,
+    PlatformProjectionResult,
+    PlatformRegistry,
+    PlatformSchemaInstaller,
+    PlatformTaskContext,
+    PlatformTaskHandler,
+    PlatformTaskName,
+    PlatformTaskResult,
+    PlatformSuggestedAction,
+)
 
-__all__ = ["PlatformHealth", "PlatformReader", "create_platform_readers"]
+__all__ = [
+    "ActionExecutionResult",
+    "NativeObjectReference",
+    "PlatformActionHandler",
+    "PlatformActionProposal",
+    "PlatformAutomationAdapter",
+    "PlatformAutomationAdapterNotRegisteredError",
+    "PlatformCapability",
+    "PlatformHandlerNotRegisteredError",
+    "PlatformHealthCheck",
+    "PlatformHealthResult",
+    "PlatformManifest",
+    "PlatformNotRegisteredError",
+    "PlatformOpportunityProposal",
+    "PlatformOutcomeUpdate",
+    "PlatformPlugin",
+    "PlatformProjectionResult",
+    "PlatformRegistry",
+    "PlatformSchemaInstaller",
+    "PlatformTaskContext",
+    "PlatformTaskHandler",
+    "PlatformTaskName",
+    "PlatformTaskResult",
+    "PlatformSuggestedAction",
+    "build_default_registry",
+    "install_registered_platform_schemas",
+]

@@ -10,6 +10,10 @@
         try {
           const response = await fetch(el.getAttribute('hx-get'), {headers: {'HX-Request': 'true'}});
           if (!response.ok) return;
+          if (response.headers.get('HX-Refresh') === 'true') {
+            window.location.reload();
+            return;
+          }
           const html = await response.text();
           const target = document.querySelector(el.getAttribute('hx-target')) || el;
           if (el.getAttribute('hx-swap') === 'outerHTML') {

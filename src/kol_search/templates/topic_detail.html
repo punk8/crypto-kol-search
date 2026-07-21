@@ -1,9 +1,0 @@
-{% extends "base.html" %}
-{% block title %}{{ cluster.title }} · 趋势详情{% endblock %}
-{% block content %}
-<section class="run-head"><div><p class="eyebrow">{{ cluster.direction }} · {{ cluster.lifecycle }}</p><h1>{{ cluster.title }}</h1><p>{{ cluster.summary }}</p></div><div class="schedule">{{ "%.0f"|format(cluster.heat_score) }}<br><span>热度 · {{ cluster.last_seen_at[:19] }}</span></div></section>
-{% for platform, posts in posts_by_platform.items() %}
-<section><div class="section-title"><h2>{{ "X / Twitter" if platform == "x" else "小红书" }}</h2><p>{{ posts|length }} 条组成内容；平台原始指标不跨平台直接比较。</p></div>
-<div class="radar-list">{% for post in posts %}<article class="radar-item"><div class="radar-rank"><strong>{{ post.like_count + post.retweet_count + post.reply_count + post.quote_count }}</strong><span>互动</span></div><div class="radar-body"><div class="radar-title"><div><strong>{{ post.author_username or post.author_id }}</strong><span>{{ post.created_at or "时间未知" }} · {{ post.source_provider }}</span></div></div><p class="source-post">{{ post.text }}</p><div class="metric-line"><span>{{ post.like_count }} 赞</span><span>{{ post.reply_count }} 评论</span><span>{{ post.retweet_count }} 转发</span><span>相关度 {{ "%.2f"|format(post.relevance) }}</span></div>{% if post.url %}<a class="button ghost" href="{{ post.url }}" target="_blank" rel="noopener noreferrer">打开原帖</a>{% endif %}</div></article>{% endfor %}</div></section>
-{% endfor %}
-{% endblock %}

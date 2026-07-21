@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
 from kol_search.twitter.base import TwitterBackendError
 from kol_search.twitter.third_party import _parse_tweet, _parse_user
 
@@ -16,7 +16,7 @@ class TwitterApiIoClient:
     """Read-only adapter for the documented TwitterAPI.io REST endpoints."""
 
     name = "twitterapi_io"
-    capabilities = BackendCapabilities(
+    capabilities = XReadCapabilities(
         user_search=True,
         post_search=True,
         batch_user_lookup=True,
@@ -106,8 +106,8 @@ class TwitterApiIoClient:
         return payload
 
     @staticmethod
-    def _dedupe(items: list[Account]) -> list[Account]:
-        output: list[Account] = []
+    def _dedupe(items: list[XAccount]) -> list[XAccount]:
+        output: list[XAccount] = []
         seen: set[str] = set()
         for item in items:
             key = item.id or item.username.lower()
@@ -128,10 +128,10 @@ class TwitterApiIoClient:
                     return [item for item in values if isinstance(item, dict)]
         return []
 
-    def search_users(self, query: str, max_results: int = 100) -> list[Account]:
+    def search_users(self, query: str, max_results: int = 100) -> list[XAccount]:
         target = max(1, min(max_results, 500))
         cursor = ""
-        output: list[Account] = []
+        output: list[XAccount] = []
         seen_cursors: set[str] = set()
 
         for _ in range(max(1, ceil(target / 20) + 1)):
@@ -158,7 +158,7 @@ class TwitterApiIoClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         # The provider currently recommends time-windowed queries instead of
         # cursor pagination for advanced search, so fetch one page intentionally.
         payload = self._get(
@@ -170,7 +170,7 @@ class TwitterApiIoClient:
             return []
         return [_parse_tweet(item) for item in tweets if isinstance(item, dict)][:max_results]
 
-    def get_user_by_username(self, username: str) -> Account | None:
+    def get_user_by_username(self, username: str) -> XAccount | None:
         payload = self._get(
             "twitter/user/info",
             params={"userName": username.lstrip("@")},
@@ -178,8 +178,8 @@ class TwitterApiIoClient:
         data = payload.get("data")
         return _parse_user(data) if isinstance(data, dict) else None
 
-    def get_users_by_usernames(self, usernames: list[str]) -> list[Account]:
-        output: list[Account] = []
+    def get_users_by_usernames(self, usernames: list[str]) -> list[XAccount]:
+        output: list[XAccount] = []
         for username in dict.fromkeys(u.lstrip("@") for u in usernames if u):
             account = self.get_user_by_username(username)
             if account is not None:
@@ -193,10 +193,10 @@ class TwitterApiIoClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         target = max(1, min(max_results, 100))
         cursor = ""
-        output: list[Post] = []
+        output: list[XTweet] = []
         seen_ids: set[str] = set()
         seen_cursors: set[str] = set()
 
@@ -232,10 +232,10 @@ class TwitterApiIoClient:
             cursor = next_cursor
         return output[:target]
 
-    def get_followings(self, username: str, max_results: int = 20) -> list[Account]:
+    def get_followings(self, username: str, max_results: int = 20) -> list[XAccount]:
         target = max(1, min(max_results, 1000))
         cursor = ""
-        output: list[Account] = []
+        output: list[XAccount] = []
         seen_cursors: set[str] = set()
         for _ in range(max(1, ceil(target / 200))):
             payload = self._get(
@@ -260,10 +260,10 @@ class TwitterApiIoClient:
 
     def get_verified_followers(
         self, user_id: str, max_results: int = 20, *, username: str | None = None
-    ) -> list[Account]:
+    ) -> list[XAccount]:
         target = max(1, min(max_results, 200))
         cursor = ""
-        output: list[Account] = []
+        output: list[XAccount] = []
         seen_cursors: set[str] = set()
         for _ in range(max(1, ceil(target / 20))):
             payload = self._get(

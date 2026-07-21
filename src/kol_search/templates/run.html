@@ -1,3 +1,0 @@
-{% extends "base.html" %}
-{% block title %}任务 #{{ run.id }} · Crypto KOL Search{% endblock %}
-{% block content %}<div id="run-panel" {% if run.status in ["queued", "running"] %}hx-get="/runs/{{ run.id }}?account_type={{ account_type }}" hx-trigger="every 2s" hx-target="#run-panel" hx-swap="outerHTML"{% endif %}>{% include "run_fragment.html" %}</div>{% endblock %}

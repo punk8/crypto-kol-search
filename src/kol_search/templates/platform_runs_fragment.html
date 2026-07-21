@@ -1,0 +1,33 @@
+<section
+  class="platform-panel platform-runs-panel"
+  id="runs"
+  {% if has_active_runs %}
+  hx-get="{{ urls.runs_fragment }}"
+  hx-trigger="every 2s"
+  hx-target="#runs"
+  hx-swap="outerHTML"
+  aria-live="polite"
+  {% endif %}
+>
+  <div class="platform-panel-head">
+    <div><p class="eyebrow">RECENT RUNS</p><h2>任务运行</h2></div>
+    <span>{{ '自动更新中' if has_active_runs else (recent_runs|length ~ ' 条任务') }}</span>
+  </div>
+  <div class="platform-compact-runs">
+    {% for run in recent_runs %}
+    <a href="{{ run.detail_url }}" class="platform-compact-run" id="job-{{ run.id }}">
+      <span>
+        <strong>{{ run.label }}</strong>
+        <small>#{{ run.id }} · {{ run.phase_label or run.phase }} · {{ run.progress }}%</small>
+        {% if run.error %}<small class="error">{{ run.error }}</small>{% endif %}
+      </span>
+      <span class="platform-run-state">
+        <span class="platform-run-progress" aria-label="任务进度 {{ run.progress }}%"><i style="width: {{ run.progress }}%"></i></span>
+        <span class="status {{ run.status }}">{{ run.status_label or run.status }}</span>
+      </span>
+    </a>
+    {% else %}
+    <div class="platform-panel-empty platform-panel-empty--compact"><strong>尚无任务</strong></div>
+    {% endfor %}
+  </div>
+</section>

@@ -1,6 +1,8 @@
-# Crypto KOL Search
+# KOL Growth OS
 
-本地运行的 X + 小红书双平台 KOL 发现、趋势研究与受控运营后台。它按中英文主题从真实平台内容发现候选，使用 24 小时、7 天、30 天分层回退并解释排名；评论和官方私信必须绑定授权账号、精确目标并逐条审批。
+本地运行的多平台 KOL 发现、信号研究与分级自动执行系统。当前架构是“共享自动化内核 + 平台原生模块 + 独立平台工作台”：每个平台保留自己的账号、内容、指标和排名模型；核心只管理任务、机会、策略、动作、审计、额度与 Kill Switch。
+
+当前内置 X 和小红书。本轮没有接入真实 YouTube 或 Instagram，但平台契约允许新平台按能力渐进上线，例如先提供频道/账号发现和内容研究，后续再增加评论、私信或自有发布。
 
 ## 快速开始
 
@@ -14,140 +16,213 @@ cp .env.example .env
 kol-search web
 ```
 
-打开 `http://127.0.0.1:8765`。默认使用 `TWITTER_BACKEND=twitterapi_io`；请配置
-`TWITTERAPI_IO_API_KEY`，或保持已连接的 OpenCLI profile 作为只读 fallback。小红书使用
-`XIAOHONGSHU_OPENCLI_PROFILE` 指定的独立登录配置。正常运行时不会显示或自动选择离线 Mock 数据。
+打开 `http://127.0.0.1:8765`：
 
-## X + 小红书真实搜索
+- `/` 或 `/platforms`：平台中心，只汇总连接、任务、机会和异常，不做跨平台影响力排名。
+- `/platforms/x`：X 工作台。
+- `/platforms/xiaohongshu`：小红书工作台。
+- `/platforms/x/module`、`/platforms/xiaohongshu/module`：由各平台 Router 注册的模块 Manifest 信息。
+- `/settings/brand`：共享品牌资料、安全表达、批准域名，以及按已注册平台动态生成的官方账号字段。
 
-首页选择“X + 小红书真实搜索”，输入 `加密货币/RWA`。系统会扩展中英文主题，分别从两个平台取得帖子并按作者聚合；每个平台独立排名，目标 10 个 KOL。24 小时数据不足时依次回退 7 天和 30 天，无发布时间内容不会被计为近期结果。
+平台工作台包含自动收件箱、主题发现、长期种子入口、平台 KOL 库、能力矩阵、动作审核、回执和通道控制。没有声明的能力不会显示对应操作。
+
+## 产品工作流
+
+每个平台独立执行以下流程：
+
+```text
+平台种子 / Active KOL
+        ↓
+持续关系与主题发现
+        ↓
+candidate → active / review / paused / rejected
+        ↓
+内容、评论与趋势信号扫描
+        ↓
+平台内机会排序
+        ↓
+auto_execute / needs_review / rejected
+        ↓
+动作回执与确认回收
+```
+
+默认平衡晋升要求平台综合分达到 `0.70`、近期存在相关内容，并具有种子或 Active KOL 的关系证据；受保护、已停用或确定性垃圾风险超过阈值的账号会被拒绝。搜索发现但证据不足的账号保留在 `candidate` 或 `review`，长期不活跃的 Active KOL 可以降为 `paused`，不会直接删除。
+
+可以在每个平台工作台的“KOL 库”中填写平台原生 ID 或 handle 添加长期种子。手动发现会根据 Manifest 提供账号搜索、内容搜索或种子关系扩展来源；关系扩展允许关键词留空。
+
+X 的持续关系发现会把 seed/Active KOL 的 following、verified follower、入站回复、引用和提及转换为可追溯证据；小红书会把 seed/Active KOL 笔记的评论作者作为候选关系来源。各平台只使用自身原生信号计算 `protected / disabled / spam_risk`，不会跨平台补位。
+
+## 共享内核与平台模块
+
+共享任务表只接受 5 种任务类型：
+
+- `manual_discovery`
+- `discovery_refresh`
+- `signal_refresh`
+- `dispatch_actions`
+- `refresh_outcomes`
+
+每条任务都携带 `platform_id` 和平台 payload。Worker 通过代码内显式 `PlatformRegistry` 找到平台处理器，不通过 X/小红书条件分支选择 Pipeline。调度器只为平台实际提供的处理器和写能力创建对应任务，因此只读平台可以先上线发现或研究能力。
+
+每个 `PlatformPlugin` 可注册：
+
+- `PlatformManifest` 与能力声明。
+- `discover`、`scan_signals`、`build_opportunities`、`execute_action`、`refresh_outcomes` 五个平台处理器。
+- 平台独立的 `native_models`、schema installer、Repository 与评分逻辑。
+- `automation_adapter`，负责原生结果投影、机会构建、KOL 查询/状态和种子写入。
+- FastAPI `router_factory`、健康检查和关闭钩子。
+
+`build_opportunities` 是平台处理器契约的一部分；共享 `signal_refresh` 会先调用 `scan_signals` 获取增量原生记录，再把结果交给 `build_opportunities`。内置平台的该处理器调用自己的 `automation_adapter.project_signals` 完成持久化、平台内评分和机会投影。它不是额外的核心任务；平台必须同时注册这两个处理器，调度器才会创建周期信号任务。
+
+共享机会和动作只使用以下引用，不要求平台内容映射到通用 Post 表：
+
+```text
+platform_id + native_object_type + native_object_id
+```
+
+完整接入步骤见 [PLATFORM_DEVELOPMENT.md](PLATFORM_DEVELOPMENT.md)。
+
+## 平台能力
+
+能力来自 `PlatformCapability`：
+
+- `account_search`
+- `content_search`
+- `timeline/feed`
+- `relations`
+- `native_trends`
+- `comment`
+- `dm`
+- `owned_publish`
+- `media_upload`
+- `analytics`
+
+能力声明必须与真实实现一致。缺失能力不会生成对应动作，也不会使用其他平台的数据补位。当前 X 声明完整搜索、关系、趋势、评论、私信、Postiz 自有发布和分析能力；小红书声明内容搜索、Feed、原生趋势、评论和私信，不声明账号搜索、关系发现或自有发布。`media_upload` 只是为未来平台保留的契约能力，当前 X 和小红书都未声明，因此工作台不会显示媒体上传入口，也不会生成媒体上传动作。
+
+## 命令行
+
+```bash
+# 查看显式注册的平台、读取连接状态与能力
+kol-search platforms
+
+# 单平台发现；--platform/-p 可重复，省略时显式默认使用 x
+kol-search discover "RWA research" --platform x --limit 30
+kol-search discover "加密货币" -p x -p xiaohongshu --limit 20
+
+# 手动信号扫描默认启动 Worker 并等待终态，完成后输出结果
+kol-search scan --platform x
+
+# 入队后不轮询任务终态
+kol-search scan --platform x --no-wait
+
+# 安全重建数据库；默认先移动旧库到时间戳备份
+kol-search db rebuild --backup
+
+# 完整离线测试
+pytest
+```
+
+`scan` 的默认值等同于 `--wait`；失败或取消会返回非零退出状态。`--no-wait` 适合已有 Web Worker 或其他常驻 Worker 正在消费同一数据库队列的场景。
+
+## 自动化与安全
+
+自动采集、平台内评分和草稿生成可以持续运行；真实写入默认关闭。只有同时设置以下开关后，符合确定性安全策略的动作才可能执行：
+
+```bash
+KOL_LIVE_WRITE_ENABLED=true
+KOL_AUTO_EXECUTION_ENABLED=true
+```
+
+默认策略：
+
+- 评论机会分不低于 `80` 才具备自动执行资格。
+- 首次冷私信始终需要人工审核；只有 `automation_conversations` 中已绑定平台账号、原生会话 ID 和验证证据且状态为 `valid` 的后续私信才可能自动执行。历史成功出站私信本身不建立有效会话，调用方提交布尔标记也不能绕过验证。
+- X 趋势内容可通过 Postiz 自动发布，默认每日最多 2 条，可配置。
+- 评论默认禁止链接；私信链接必须属于批准域名。
+- 品牌禁用词和批准域名可在 `/settings/brand` 维护；`KOL_APPROVED_PRODUCT_DOMAINS` 仅作为首次初始化的环境级批准域名来源。
+- 评论限频 `3/h、10/day`，私信 `2/h、5/day`，同一作者冷却 7 天。
+- 写操作不会自动重试。不确定回执进入 `confirmation_required`。
+- 登录异常、验证码、限流、平台警告或不确定回执会暂停对应账号通道。
+- Kill Switch 支持全局、平台、账号和动作类型四级控制；暂停写入不会停止只读采集。
+
+关键配置：
+
+```bash
+KOL_ENABLED_PLATFORMS=x,xiaohongshu
+KOL_DISCOVERY_INTERVAL_HOURS=24
+KOL_SIGNAL_INTERVAL_MINUTES=30
+KOL_X_SIGNAL_INTERVAL_MINUTES=5  # 可选：仅覆盖 X 的信号扫描周期
+KOL_XIAOHONGSHU_SIGNAL_INTERVAL_MINUTES=30  # 可选：仅覆盖小红书
+KOL_X_TRENDS_PER_SCAN=5  # 每轮组合查询覆盖的近期 Trend 数
+KOL_X_TWEETS_PER_TREND=10  # 组合查询的目标单 Trend 推文数
+KOL_REVIEW_QUEUE_ENABLED=false  # 临界 KOL 留在 candidate 并持续自动重评
+KOL_PLATFORM_ACCOUNT_BATCH_SIZE=50
+KOL_ACTION_DISPATCH_SECONDS=60
+KOL_AUTO_COMMENT_SCORE=80
+KOL_AUTO_DM_FOLLOWUP_SCORE=80
+KOL_AUTO_PUBLISH_SCORE=80
+KOL_PUBLISH_DAILY_LIMIT=2
+KOL_PUBLISH_WINDOWS=09:00-11:00,17:00-20:00
+```
+
+可选的 AI 分类、聚类和草稿能力需要额外安装依赖并配置密钥。AI 输出只作为平台内容相关性、聚类解释和草稿输入，不直接给出晋升、审核或执行结论；禁用词、链接、能力、会话验证、额度、冷却、幂等、Kill Switch 与执行资格仍由确定性策略校验。没有密钥或 AI 调用失败时会回退到离线分类/草稿路径，不阻断平台投影：
+
+```bash
+pip install -e ".[ai]"
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.6-luna
+```
+
+## 平台连接
+
+### X
+
+读取后端支持 `official`、`twitterapi_io`、`opencli`、`third_party`、显式启用的 `twscrape` 和测试专用 `mock`。TwitterAPI.io 可在可恢复错误时于任务内切换到 OpenCLI；HTTP 400/404/422 不触发切换。
+
+### 小红书
+
+当前通过独立 OpenCLI Browser Bridge profile 读取和执行受控互动：
 
 ```bash
 OPENCLI_PROFILE=x-research
 XIAOHONGSHU_OPENCLI_PROFILE=xhs-research
-
-opencli --profile x-research twitter whoami -f json
-opencli --profile xhs-research xiaohongshu whoami -f json
 ```
 
-数据库使用 `(platform, external_id)` 标识账号和帖子；X 与小红书同名账号不会被错误合并。运行时单个平台失败会以告警展示，不会用 Mock 或另一个平台的数据补位。
+同名 X 与小红书账号保持完全独立，不进行跨平台身份推断。
 
-## 数据后端
+小红书搜索快照如果没有返回平台原生用户 ID，会保留笔记用于内容研究，但作者会明确标记为 `unresolved`；该作者不会进入持续 Feed 扫描、自动晋升或私信，避免把本地哈希误当成平台账号 ID。后续取得真实用户 ID 后才能进入这些流程。
 
-- `official`：配置 `X_BEARER_TOKEN`，支持用户搜索、帖子搜索和 profile 查询。
-- `twitterapi_io`：配置 `TWITTERAPI_IO_API_KEY`，使用 TwitterAPI.io 的用户搜索、帖子搜索、资料、时间线、完整 following profile 和 verified follower 接口；初始本地配置也兼容 `API_KEY`。
-- `opencli`：复用指定 Chrome 用户资料的 X 登录态，不需要 API Key；支持帖子搜索、资料、时间线和 following。用户搜索通过帖子作者发现模拟，verified followers 会明确降级跳过。
-- `third_party`：配置供应商 URL 和密钥；只有供应商实现 `/search/users` 时才设置 `TWITTER_TP_SUPPORTS_USER_SEARCH=true`。
-- `twscrape`：额外安装 `.[twscrape]`，并显式设置 `ENABLE_TWSCRAPE=true`。此方式存在平台条款和账号封禁风险，不会自动启用。
-- `mock`：仅用于自动化测试。必须显式设置 `KOL_ENABLE_MOCK_BACKEND=true` 才能启用，
-  正常运行默认关闭。
+### Postiz
 
-除显式配置的 TwitterAPI.io → OpenCLI fallback 外，各后端不会自动相互降级。任务会保留实际后端、调用计数、告警和错误。
-
-### TwitterAPI.io → OpenCLI fallback
-
-默认可将 OpenCLI 配置为 TwitterAPI.io 的只读 fallback：
-
-```bash
-OPENCLI_COMMAND=opencli
-OPENCLI_PROFILE=ddd
-OPENCLI_TIMEOUT_SECONDS=90
-TWITTER_FALLBACK_BACKEND=opencli
-```
-
-当 TwitterAPI.io 遇到网络错误、超时、无效响应、401/402/403/408/429 或 5xx 时，当前任务会从失败的调用开始切换到 OpenCLI，后续调用保持使用 OpenCLI。HTTP 400/404/422 不会触发 fallback。任务统计会记录实际活跃后端、两侧调用次数、切换次数和原因。
-
-也可以直接选择独立后端：
-
-```bash
-kol-search discover "DeFi researcher" --backend opencli --limit 30
-```
-
-项目按 OpenCLI 1.8.6 的命令接口集成，并显式使用 `OPENCLI_PROFILE` 指定的 Browser Bridge profile。Chrome 需要安装并连接 Browser Bridge、登录 X，并保持至少一个窗口打开。使用 `opencli profile list` 检查连接状态，再用 `opencli --profile ddd twitter search bitcoin --product live --limit 1 -f json` 做只读验证。浏览器关闭后，定时任务无法使用该后端或 fallback。
-
-## 人物雷达与趋势雷达
-
-后台提供两个面向执行的工作台：
-
-- `/radar/people`：从 approved KOL 时间线和主题搜索中生成回复机会、可编辑草稿与 24 小时处理窗口。
-- `/radar/topics`：15 分钟缓存的双平台 Trend，按金融、科技、AI、加密/RWA及平台筛选，并可进入详情追溯组成帖子。
-- `/operations`：授权账号登记、评论/私信草稿、逐条审批、真实执行、回执、审计和 Kill Switch。
-
-先在 `/settings/brand` 填写品牌名称、X/小红书官方账号、产品链接、定位、语气和禁用表达，再在 `/operations` 登记授权账号。评论角色为 `engagement`，官方私信角色为 `official_dm`；一个 POC 账号可以兼任两个角色。只有 `KOL_LIVE_WRITE_ENABLED=true`、任务已逐条批准、账号健康且 Kill Switch 关闭时才会执行真实发送。未知回执进入 `confirmation_required`，不会自动重试。
-
-默认频控为评论 `3/h、10/24h`，私信 `2/h、5/24h`，同一作者冷却 7 天。评论默认禁止链接；私信中的链接必须属于 `KOL_APPROVED_PRODUCT_DOMAINS`。验证码、登录异常、限流或平台警告会停止账号，不提供任何绕过机制。
-
-自动扫描默认关闭。确认真实后端可用后，在 `.env` 设置：
-
-```bash
-KOL_ENABLE_SIGNAL_SCAN=true
-KOL_SIGNAL_INTERVAL_MINUTES=30
-```
-
-## 初始种子库
-
-`seeds/crypto_seed_library.csv` 包含 140 个策展候选：100 个进入基础核验名单，40 个保留在 review 队列。基础名单固定为 80 个个人、20 个机构，满足 12 个主题、70/20/10 语言和 6/6/4/4 机构配额；`seeds/crypto_handles.txt` 只包含其中 80 个个人账号。
-
-后台的“构建 100 基础种子”会重新取得真实数字 ID、公开状态、粉丝数和最近 20 条内容。只有全部 100 个通过活跃度、相关证据、原创/推广比例和异常账号检查，版本化种子集才会成为 `ready` 并写入 100 个 `approved`。CSV 不保存伪造 ID；当前无法联网核验的行保留 `live_validation_required` 标记。
-
-“从 100 扩散到 200”使用时间线提及、40 个高信任种子的 following、20 个核心种子的 verified followers 和 12 个主题用户搜索聚合最多 2,000 个候选。最终新增 100 个账号以 `pending` 进入新版本，不会自动晋升。每条新增记录保留关系类型、共同种子数和证据；可在详情页人工批准或驳回，并导出 CSV/JSON。
-
-每个构建/扩散任务使用 5 美元估算硬预算；达到 80% 会停止非必要关系扩展。Profile/时间线缓存 7 天，关系和 verified follower 缓存 14 天。HTTP 402 会把新版本保留为 `incomplete`，不批准部分核验结果，也不会自动切换数据后端。
-
-## 可选模型增强
-
-```bash
-pip install -e ".[ai]"
-```
-
-设置 `OPENAI_API_KEY` 后，后台可选择模型增强。模型只负责账号类型、语言、主题和相关度分类；联系方式始终由确定性解析器从公开页面提取，不允许模型猜测。模型默认值可通过 `OPENAI_MODEL` 调整。
-
-## 安全和数据边界
-
-- Web 服务默认只绑定 `127.0.0.1`。VPN/非本机监听必须同时设置 `KOL_ADMIN_PASSWORD` 和 `KOL_SESSION_SECRET`；管理 Cookie 使用 HttpOnly、SameSite=Strict，并检查同源写请求。
-- 联系方式只来自 X bio/profile links、Linktree 类页面和明确官网的同域联系页面。
-- 不推断邮箱、不收集手机号、不查 WHOIS；外联只允许授权账号、精确目标、逐条审批、配额和拒绝联系名单。
-- 抓取器遵守 robots.txt，限制页面大小、跳转、超时和端口，并阻止私网、localhost、云元数据地址等 SSRF 目标。
-- 自动发现的联系方式以 `pending` 保存，并随证据、来源 URL 和审核状态导出。
-
-## Postiz
-
-Dashboard 的“主动发布”已接入 Postiz Cloud，只用于自有 X 内容：
-
-- 从 Trend 的“创建 X 帖子”或独立编辑器创建单帖、图片帖和线程；
-- 自动同步 `identifier=x` 的 integrations，显示并选择实际发布账号，可设置一个默认账号；
-- 每段支持本地 JPEG/PNG/GIF/WebP 或公开 HTTPS 图片 URL；媒体只在审批后上传；
-- 支持审批后立即发布或按 `Asia/Shanghai` 排期，数据库与 Postiz 请求同时保留 UTC；
-- 支持定时帖暂停、恢复、删除，以及通过帖子查询回读 `releaseURL`；
-- 创建结果不确定时进入 `confirmation_required`，不会自动重试而造成重复发帖。
-
-本地配置：
+Postiz 只负责声明了对应发布桥接的 X 纯文本自有内容、排期和回执，不参与 KOL 读取、评论或私信。当前 X Manifest 未声明 `media_upload`，因此这条链路不接受或上传媒体：
 
 ```bash
 POSTIZ_API_URL=https://api.postiz.com/public/v1
-POSTIZ_API_KEY=             # 只放本地 .env，禁止提交或录入 Dashboard
-POSTIZ_INTEGRATION_CACHE_MINUTES=15
-KOL_PUBLISHING_MEDIA_DIR=data/publishing_media
+POSTIZ_API_KEY=
 ```
 
-Postiz 不参与 KOL/Trend 发现、第三方评论或私信，并明确拒绝小红书发布。未配置 API Key 时仍可查看页面，但真实同步与提交会被阻止；未审批草稿永远只保存在本地。
+在“配置 → 账号通道管理”中登记 Browser Profile 和 Postiz integration ID；同一平台可登记多个 Browser 互动账号与多个 Postiz 发布账号。系统只从已连接、未暂停且声明对应能力的账号中选择通道，并按近期动作使用量分配，使用量相同时优先选择标记为优先的账号。新自动化链路把 Postiz integration 直接保存为 X 的 `owned_publish` 连接，不创建旧 `owned_posts` 草稿，也不会从旧 Postiz 表隐式导入连接。发布窗口由 X 模块在实际执行前计算；超时或缺少可确认回执时只进行 `refresh_outcomes` 回读，绝不重发。结果回收优先按 external ID 精确匹配；缺少 external ID 时，只接受 integration、完整内容和动作时间前后 15 分钟同时匹配且结果唯一的记录，零条或多条都保持 `confirmation_required`。
 
-完整真实验收步骤、沙盒实发要求以及官方/持牌供应商迁移清单见 [VALIDATION.md](VALIDATION.md)。
+## 数据结构
 
-## 命令
+- `automation_*`：共享连接、5 种任务、机会引用、动作、策略决策、已验证会话、通道控制、额度、品牌配置和审计；`automation_conversations` 独立保存平台原生会话的验证/撤销状态和证据。
+- `x_*`：X 原生账号、KOL 状态、Tweet、指标快照、趋势和发现证据。
+- `xhs_*`：小红书原生用户、KOL 状态、笔记、评论、指标快照、趋势和发现证据。
+- `x_schema_migrations`、`xhs_schema_migrations`：平台模块自己的 schema 版本记录。
+- 旧 `runs / contacts / seed_sets / owned_posts / accounts / posts` 业务 schema 与对应 Web 入口已删除；新运行时不会创建或读取这些表。
 
-```bash
-# 本地后台
-kol-search web
+数据库默认位于 `data/kol_search.db`，使用 WAL。重建命令不会静默覆盖旧库；初始化失败时会恢复备份并保留失败的新文件。
 
-# 命令行执行一轮并等待完成
-kol-search discover "DeFi, 去中心化金融" --backend twitterapi_io --limit 30
+信号扫描按平台原生账号 ID 稳定轮转，每批最多 `KOL_PLATFORM_ACCOUNT_BATCH_SIZE` 个账号，并保存每账号独立内容游标；一个账号的高水位不会跳过另一个账号的新内容。Worker 启动时会把超过 15 分钟仍为 `running` 的遗留任务标为 `failed`，要求检查平台状态后再人工决定是否重跑；遗留 `executing` 写动作恢复为 `confirmation_required`，两者都不会自动重试。
 
-# 种子构建与扩散目前从本地后台创建：
-# 任务类型选择“构建 100 基础种子”；完成后将种子集 ID 填入“从 100 扩散到 200”
+浏览器写入在不可逆的发送点击上只尝试一次。点击超时/报错可能发生在平台已接收写入之后，因此一律视为不确定；评论或私信只有精确回执元素相对发送前快照新增了最终文本、且编辑器中已无该文本等平台定义信号同时成立时才确认。页面正文、旧同文消息、仍停留在编辑器里的草稿都不能作为成功证据；浏览器链路也不会用本地摘要伪造平台 external ID。
 
-# 测试
-pytest
-```
+## 开发约束
 
-SQLite 默认位于 `data/kol_search.db`，使用 WAL 模式。设置 `KOL_ENABLE_WEEKLY_REFRESH=true` 后，每周日 03:00（默认 `Asia/Shanghai`）会按当前默认后端创建总库刷新任务；可在 `.env` 调整计划和调用预算。
+- 新平台必须通过代码内显式注册加入，不使用动态插件市场或 Python entry points。
+- 测试不得依赖真实网络或凭据；Mock 必须通过 `KOL_ENABLE_MOCK_BACKEND=true` 显式启用。
+- Web 默认只绑定 `127.0.0.1`；非本机监听必须配置管理员密码和 session secret。
+- API Key、Browser profile 数据库、运行数据库和导出均不得提交。
+- AI 只提供分类、聚类、相关性和草稿输入；所有安全门、审批与自动执行资格由确定性策略控制，执行前会用最终文本再次校验。
+
+验收步骤见 [VALIDATION.md](VALIDATION.md)。

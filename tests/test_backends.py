@@ -5,16 +5,17 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from kol_search.models import Account, BackendCapabilities
+from kol_search.twitter.models import XAccount, XReadCapabilities
 from kol_search.settings import Settings
 from kol_search.twitter.base import TwitterBackendError
 from kol_search.twitter.failover import FailoverTwitterClient
-from kol_search.twitter.factory import create_twitter_client
+from kol_search.twitter.factory import create_x_read_provider
 from kol_search.twitter.mock import MockTwitterClient
 from kol_search.twitter.official import _parse_account, _parse_post
 from kol_search.twitter.opencli import OpenCliTwitterClient
 from kol_search.twitter.third_party import ThirdPartyTwitterClient
 from kol_search.twitter.twitterapi_io import TwitterApiIoClient
+from kol_search.platforms.opencli import OpenCliXiaohongshuReader
 
 
 def test_official_parser_preserves_entities_and_metrics():
@@ -83,10 +84,77 @@ def test_real_backend_is_default_and_mock_requires_explicit_opt_in():
     assert settings.twitter_backend == "twitterapi_io"
     assert settings.backend_ready("mock")[0] is False
     with pytest.raises(TwitterBackendError, match="Mock backend is disabled"):
-        create_twitter_client("mock", settings)
+        create_x_read_provider("mock", settings)
 
     test_settings = Settings(_env_file=None, KOL_ENABLE_MOCK_BACKEND=True)
-    assert isinstance(create_twitter_client("mock", test_settings), MockTwitterClient)
+    assert isinstance(create_x_read_provider("mock", test_settings), MockTwitterClient)
+
+
+def test_mock_backend_preserves_content_timestamps_across_client_restarts():
+    first = MockTwitterClient()
+    second = MockTwitterClient()
+
+    first_posts = first.search_tweets("crypto", max_results=100)
+    second_posts = second.search_tweets("crypto", max_results=100)
+
+    assert {post.id: post.created_at for post in first_posts} == {
+        post.id: post.created_at for post in second_posts
+    }
+
+
+def test_xiaohongshu_reader_marks_missing_native_author_id_as_unresolved():
+    def runner(command, **_kwargs):  # noqa: ANN001, ANN202
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                [
+                    {
+                        "title": "RWA note",
+                        "author": "Alice",
+                        "url": "https://www.xiaohongshu.com/explore/note-1",
+                    }
+                ]
+            ),
+            stderr="",
+        )
+
+    reader = OpenCliXiaohongshuReader(
+        command="/test/opencli", profile="test-profile", runner=runner
+    )
+    post = reader.search_posts("RWA", limit=1)[0]
+
+    assert post["author_id"].startswith("xiaohongshu:unresolved:")
+    assert post["author_native_id_resolved"] is False
+
+
+def test_xiaohongshu_reader_resolves_native_author_id_from_profile_url():
+    def runner(command, **_kwargs):  # noqa: ANN001, ANN202
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                [
+                    {
+                        "title": "RWA note",
+                        "author": "Alice",
+                        "author_url": (
+                            "https://www.xiaohongshu.com/user/profile/native-user-1"
+                        ),
+                        "url": "https://www.xiaohongshu.com/explore/note-1",
+                    }
+                ]
+            ),
+            stderr="",
+        )
+
+    reader = OpenCliXiaohongshuReader(
+        command="/test/opencli", profile="test-profile", runner=runner
+    )
+    post = reader.search_posts("RWA", limit=1)[0]
+
+    assert post["author_id"] == "xiaohongshu:native-user-1"
+    assert post["author_native_id_resolved"] is True
 
 
 def test_twitterapi_io_normalizes_users_posts_and_pagination():
@@ -341,9 +409,40 @@ def test_opencli_profile_batch_keeps_partial_real_results():
     assert any("@bob" in warning for warning in client.warnings)
 
 
+def test_opencli_user_search_bounds_profile_hydration_before_requests():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        operation = command[4]
+        if operation == "search":
+            payload = [
+                {"id": f"t{index}", "author": f"user{index}", "text": "DeFi"}
+                for index in range(8)
+            ]
+        elif operation == "profile":
+            handle = command[5]
+            payload = [{"screen_name": handle, "followers": 100}]
+        else:
+            raise AssertionError(operation)
+        return subprocess.CompletedProcess(
+            command, 0, stdout=json.dumps(payload), stderr=""
+        )
+
+    client = OpenCliTwitterClient(
+        command="/usr/bin/true",
+        profile="ddd",
+        runner=runner,
+    )
+    accounts = client.search_users("defi", max_results=2)
+
+    assert [account.username for account in accounts] == ["user0", "user1"]
+    assert [command[4] for command in calls] == ["search", "profile", "profile"]
+
+
 def test_failover_is_sticky_and_preserves_diagnostics():
     class Client:
-        capabilities = BackendCapabilities(
+        capabilities = XReadCapabilities(
             user_search=True, followings=True, verified_followers=True
         )
 
@@ -356,7 +455,7 @@ def test_failover_is_sticky_and_preserves_diagnostics():
             self.calls += 1
             if self.fail:
                 raise TwitterBackendError("credits exhausted", status_code=402)
-            return [Account(id="1", username="alice")]
+            return [XAccount(id="1", username="alice")]
 
         def get_verified_followers(
             self, user_id: str, max_results: int = 20, *, username=None
@@ -369,7 +468,7 @@ def test_failover_is_sticky_and_preserves_diagnostics():
 
     primary = Client("twitterapi_io", fail=True)
     fallback = Client("opencli")
-    fallback.capabilities = BackendCapabilities(user_search=True, verified_followers=False)
+    fallback.capabilities = XReadCapabilities(user_search=True, verified_followers=False)
     client = FailoverTwitterClient(primary, fallback)
 
     assert client.search_users("defi")[0].username == "alice"
@@ -381,11 +480,20 @@ def test_failover_is_sticky_and_preserves_diagnostics():
     assert client.diagnostics["fallback_count"] == 1
     assert any("verified followers" in warning for warning in client.warnings)
 
+    # Sticky failover is scoped to one core platform job, not the whole process.
+    primary.fail = False
+    client.begin_run()
+    assert client.search_users("rwa")[0].username == "alice"
+    assert primary.calls == 2
+    assert client.diagnostics["active_backend"] == "twitterapi_io"
+    assert client.diagnostics["fallback_count"] == 0
+    assert client.warnings == []
+
 
 def test_failover_does_not_hide_bad_request():
     class Primary:
         name = "twitterapi_io"
-        capabilities = BackendCapabilities()
+        capabilities = XReadCapabilities()
 
         def search_users(self, query: str, max_results: int = 100):
             raise TwitterBackendError("bad query", status_code=400)
@@ -395,7 +503,7 @@ def test_failover_does_not_hide_bad_request():
 
     class Fallback:
         name = "opencli"
-        capabilities = BackendCapabilities()
+        capabilities = XReadCapabilities()
 
         def search_users(self, query: str, max_results: int = 100):
             raise AssertionError("must not fallback")

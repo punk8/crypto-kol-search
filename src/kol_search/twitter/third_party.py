@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
 from kol_search.twitter.base import TwitterBackendError
 
 
@@ -16,7 +16,7 @@ def _as_int(v: Any, default: int = 0) -> int:
         return default
 
 
-def _parse_user(data: dict[str, Any]) -> Account:
+def _parse_user(data: dict[str, Any]) -> XAccount:
     """Best-effort mapping across common third-party shapes."""
     metrics = data.get("public_metrics") or data.get("legacy") or {}
     profile_bio = data.get("profile_bio") or {}
@@ -45,7 +45,7 @@ def _parse_user(data: dict[str, Any]) -> Account:
         or data.get("followers")
         or 0
     )
-    return Account(
+    return XAccount(
         id=uid,
         username=str(username).lstrip("@"),
         name=data.get("name") or data.get("display_name"),
@@ -82,7 +82,7 @@ def _parse_user(data: dict[str, Any]) -> Account:
     )
 
 
-def _parse_tweet(data: dict[str, Any]) -> Post:
+def _parse_tweet(data: dict[str, Any]) -> XTweet:
     user = data.get("user") or data.get("author") or {}
     author_username = (
         data.get("author_username")
@@ -144,7 +144,7 @@ def _parse_tweet(data: dict[str, Any]) -> Post:
         or data.get("replyToUsername")
     )
 
-    return Post(
+    return XTweet(
         id=post_id,
         author_id=author_id,
         author_username=str(author_username).lstrip("@") if author_username else None,
@@ -237,7 +237,7 @@ class ThirdPartyTwitterClient:
                 hint="See README.md for vendor configuration.",
             )
         self._base = base_url.rstrip("/") + "/"
-        self.capabilities = BackendCapabilities(user_search=supports_user_search)
+        self.capabilities = XReadCapabilities(user_search=supports_user_search)
         self._client = httpx.Client(
             headers={
                 api_key_header: api_key,
@@ -286,7 +286,7 @@ class ThirdPartyTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         params: dict[str, Any] = {"query": query, "max_results": max_results, "limit": max_results}
         if since_id:
             params["since_id"] = since_id
@@ -294,14 +294,14 @@ class ThirdPartyTwitterClient:
         items = self._extract_list(payload, ("data", "tweets", "results"))
         return [_parse_tweet(t) for t in items][:max_results]
 
-    def search_users(self, query: str, max_results: int = 100) -> list[Account]:
+    def search_users(self, query: str, max_results: int = 100) -> list[XAccount]:
         if not self.capabilities.user_search:
             return []
         payload = self._get("search/users", params={"query": query, "max_results": max_results})
         items = self._extract_list(payload, ("data", "users", "results"))
         return [_parse_user(item) for item in items][:max_results]
 
-    def get_user_by_username(self, username: str) -> Account | None:
+    def get_user_by_username(self, username: str) -> XAccount | None:
         username = username.lstrip("@")
         payload = self._get(f"users/by/username/{username}")
         if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
@@ -313,7 +313,7 @@ class ThirdPartyTwitterClient:
             return _parse_user(payload)
         return None
 
-    def get_users_by_usernames(self, usernames: list[str]) -> list[Account]:
+    def get_users_by_usernames(self, usernames: list[str]) -> list[XAccount]:
         clean = [u.lstrip("@") for u in usernames if u]
         if not clean:
             return []
@@ -322,7 +322,7 @@ class ThirdPartyTwitterClient:
         if items:
             return [_parse_user(u) for u in items]
         # fallback: sequential
-        out: list[Account] = []
+        out: list[XAccount] = []
         for u in clean:
             acc = self.get_user_by_username(u)
             if acc:
@@ -336,7 +336,7 @@ class ThirdPartyTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         payload = self._get(
             f"users/{user_id}/tweets",
             params={

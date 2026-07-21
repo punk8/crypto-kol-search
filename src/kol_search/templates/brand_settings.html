@@ -1,21 +1,73 @@
 {% extends "base.html" %}
-{% block title %}品牌设置 · Crypto KOL Search{% endblock %}
+{% block title %}配置 · Crypto KOL Search{% endblock %}
 {% block content %}
+<link rel="stylesheet" href="/static/platforms.css">
 <section class="workspace-head">
-  <div><p class="eyebrow">BRAND PROFILE</p><h1>品牌回复上下文</h1><p>用于约束评论与私信草稿；每条外发内容仍需人工批准。</p></div>
+  <div><p class="eyebrow">SYSTEM CONFIGURATION</p><h1>配置</h1><p>管理品牌资料、账号通道和自动化安全规则。</p></div>
 </section>
 <form action="/settings/brand" method="post" class="settings-form">
   <div class="form-grid">
     <label>品牌名称<input name="brand_name" value="{{ brand.brand_name }}" required></label>
-    <label>X handle<input name="x_handle" value="{{ brand.x_handle }}" placeholder="your_brand" required></label>
-    <label>小红书账号<input name="xiaohongshu_handle" value="{{ brand.xiaohongshu_handle or '' }}" placeholder="品牌官方账号"></label>
+    {% for platform in platforms %}<label>{{ platform.name }} 账号<input name="platform_handle_{{ platform.platform_id }}" value="{{ platform_handles.get(platform.platform_id, '') }}" placeholder="{{ platform.name }} 官方账号"></label>{% endfor %}
     <label class="wide">产品链接<input name="product_url" type="url" value="{{ brand.product_url or '' }}" placeholder="https://product.example.com"></label>
     <label>语气<input name="tone" value="{{ brand.tone }}"></label>
     <label class="wide">项目简介<textarea name="description" rows="4" placeholder="项目解决什么问题、核心能力和差异点">{{ brand.description }}</textarea></label>
     <label class="wide">目标受众<textarea name="audience" rows="3" placeholder="希望建立关系的人群与使用场景">{{ brand.audience }}</textarea></label>
     <label>允许提及的事实<span class="field-note">每行一条</span><textarea name="allowed_claims" rows="7">{{ brand.allowed_claims|join('\n') }}</textarea></label>
     <label>禁用词与禁用表达<span class="field-note">每行一条</span><textarea name="forbidden_terms" rows="7">{{ brand.forbidden_terms|join('\n') }}</textarea></label>
+    <label>批准链接域名<span class="field-note">每行一个域名，不含协议</span><textarea name="approved_domains" rows="7">{{ brand.approved_domains|join('\n') }}</textarea></label>
   </div>
   <div class="form-actions"><button type="submit">保存品牌配置</button></div>
 </form>
+
+<section class="automation-admin" id="platform-connections" aria-labelledby="platform-connections-title">
+  <div class="section-title"><p class="eyebrow">PLATFORM CONNECTIONS</p><h2 id="platform-connections-title">账号通道管理</h2><p>每个平台可登记多个 Browser 互动账号和多个 Postiz 发布账号；系统只会选择健康且未暂停的通道。</p></div>
+  {% for platform in automation_controls.platforms %}
+  <section class="platform-panel automation-admin-platform">
+    <div class="platform-panel-head"><div><h2>{{ platform.name }}</h2><p>{{ platform.accounts|length }} 个已登记写入账号</p></div><a href="/platforms/{{ platform.platform_id }}">查看工作台</a></div>
+    <div class="platform-connection-admin-forms">
+      {% if 'comment' in platform.capabilities or 'dm' in platform.capabilities %}
+      <details class="platform-connection-create"><summary>添加 Browser 互动账号</summary><form action="/platforms/{{ platform.platform_id }}/connections" method="post"><input type="hidden" name="connection_kind" value="browser"><label>显示名称<input name="display_name" placeholder="品牌主账号"></label><label>平台账号 ID<input name="external_account_id" placeholder="可填写平台用户名" required></label><label>用户名<input name="username" required></label><label>Browser Profile<input name="browser_profile" required></label><div class="platform-capability-checks">{% if 'comment' in platform.capabilities %}<label><input type="checkbox" name="capabilities" value="comment" checked>评论</label>{% endif %}{% if 'dm' in platform.capabilities %}<label><input type="checkbox" name="capabilities" value="dm">私信</label>{% endif %}<label><input type="checkbox" name="is_default" value="true">优先账号</label></div><button type="submit">添加 Browser 账号</button></form></details>
+      {% endif %}
+      {% if platform.metadata.publishing_bridge == 'postiz' %}
+      <details class="platform-connection-create"><summary>添加 Postiz 发布账号</summary><form action="/platforms/{{ platform.platform_id }}/connections" method="post"><input type="hidden" name="connection_kind" value="postiz"><label>显示名称<input name="display_name" placeholder="品牌发布账号"></label><label>Postiz integration ID<input name="integration_id" required></label><label class="check"><input type="checkbox" name="is_default" value="true">优先账号</label><button type="submit">添加 Postiz 账号</button></form></details>
+      {% endif %}
+    </div>
+    <div class="platform-account-list">
+      {% for account in platform.accounts %}
+      <article class="platform-account-admin-row"><div><strong>{{ account.display_name }}</strong><small>{{ account.kind_label }} · {{ account.identifier }}{% if account.browser_profile %} · Profile {{ account.browser_profile }}{% endif %}</small><small>{{ account.roles|join(' · ') or '授权账号' }}{% if account.is_default %} · 优先账号{% endif %}</small></div><span class="status {{ 'paused' if account.paused else account.status }}">{{ '已暂停' if account.paused else account.status }}</span><form action="/automation/controls/kill-switch" method="post"><input type="hidden" name="scope" value="account"><input type="hidden" name="platform_id" value="{{ platform.platform_id }}"><input type="hidden" name="connection_id" value="{{ account.connection_id }}"><input type="hidden" name="enabled" value="{{ 'false' if account.paused else 'true' }}"><button class="{{ 'ghost' if account.paused else 'danger' }}">{{ '恢复账号' if account.paused else '暂停账号' }}</button></form></article>
+      {% else %}<div class="platform-panel-empty platform-panel-empty--compact"><strong>尚未登记写入账号</strong><p>只读发现仍可正常运行。</p></div>{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</section>
+
+<section class="automation-admin" id="automation-controls" aria-labelledby="automation-controls-title">
+  <div class="section-title"><p class="eyebrow">ADMIN CONTROLS</p><h2 id="automation-controls-title">自动化安全控制</h2><p>仅在需要暂停或恢复写入时使用；发现、评分和只读扫描不受影响。</p></div>
+
+  <div class="automation-admin-grid">
+    <section class="platform-panel automation-admin-panel">
+      <div class="platform-panel-head"><div><h2>全局写入</h2><p>影响所有平台和所有对外动作。</p></div><span class="status {{ 'paused' if automation_controls.global_paused else 'active' }}">{{ '已暂停' if automation_controls.global_paused else '运行中' }}</span></div>
+      <div class="automation-control-row">
+        <span><strong>{{ '恢复全部平台写入' if automation_controls.global_paused else '紧急暂停全部写入' }}</strong><small>只读后台任务会继续运行</small></span>
+        <form action="/automation/controls/kill-switch" method="post"><input type="hidden" name="scope" value="global"><input type="hidden" name="enabled" value="{{ 'false' if automation_controls.global_paused else 'true' }}"><button class="{{ 'ghost' if automation_controls.global_paused else 'danger' }}">{{ '恢复' if automation_controls.global_paused else '暂停' }}</button></form>
+      </div>
+    </section>
+
+    <section class="platform-panel automation-admin-panel">
+      <div class="platform-panel-head"><div><h2>动作类型</h2><p>跨平台暂停某一类自动动作。</p></div></div>
+      {% for item in automation_controls.action_types %}<div class="automation-control-row"><span><strong>{{ item.label }}</strong><small>{{ '当前已暂停' if item.paused else '当前允许运行' }}</small></span><form action="/automation/controls/kill-switch" method="post"><input type="hidden" name="scope" value="action_type"><input type="hidden" name="action_type" value="{{ item.action_type }}"><input type="hidden" name="enabled" value="{{ 'false' if item.paused else 'true' }}"><button class="{{ 'ghost' if item.paused else 'danger' }}">{{ '恢复' if item.paused else '暂停' }}</button></form></div>{% endfor %}
+    </section>
+  </div>
+
+  {% for platform in automation_controls.platforms %}
+  <section class="platform-panel automation-admin-platform">
+    <div class="platform-panel-head"><div><h2>{{ platform.name }}</h2><p>平台及其授权账号的写入控制。</p></div><span class="status {{ 'paused' if platform.paused else 'active' }}">{{ '平台已暂停' if platform.paused else '平台运行中' }}</span></div>
+    <div class="automation-control-row">
+      <span><strong>平台写入</strong><small>影响 {{ platform.name }} 的所有对外动作</small></span>
+      <form action="/automation/controls/kill-switch" method="post"><input type="hidden" name="scope" value="platform"><input type="hidden" name="platform_id" value="{{ platform.platform_id }}"><input type="hidden" name="enabled" value="{{ 'false' if platform.paused else 'true' }}"><button class="{{ 'ghost' if platform.paused else 'danger' }}">{{ '恢复平台' if platform.paused else '暂停平台' }}</button></form>
+    </div>
+  </section>
+  {% endfor %}
+</section>
 {% endblock %}

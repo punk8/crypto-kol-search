@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from kol_search.models import Account, BackendCapabilities, Post, TrendSignal
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet, XTrend
 
 
 def merge_client_diagnostics(
@@ -35,13 +35,13 @@ class TwitterBackendError(Exception):
 
 
 @runtime_checkable
-class TwitterClient(Protocol):
-    """Pluggable Twitter/X data access."""
+class XReadProvider(Protocol):
+    """Platform-owned X read-provider contract."""
 
     name: str
-    capabilities: BackendCapabilities
+    capabilities: XReadCapabilities
 
-    def search_users(self, query: str, max_results: int = 100) -> list[Account]:
+    def search_users(self, query: str, max_results: int = 100) -> list[XAccount]:
         """Search public user profiles. Returns [] when the backend lacks this capability."""
         ...
 
@@ -50,14 +50,14 @@ class TwitterClient(Protocol):
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         """Search recent posts matching query."""
         ...
 
-    def get_user_by_username(self, username: str) -> Account | None:
+    def get_user_by_username(self, username: str) -> XAccount | None:
         ...
 
-    def get_users_by_usernames(self, usernames: list[str]) -> list[Account]:
+    def get_users_by_usernames(self, usernames: list[str]) -> list[XAccount]:
         ...
 
     def get_user_tweets(
@@ -67,10 +67,10 @@ class TwitterClient(Protocol):
         *,
         username: str | None = None,
         include_replies: bool = False,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         ...
 
-    def get_followings(self, username: str, max_results: int = 20) -> list[Account]:
+    def get_followings(self, username: str, max_results: int = 20) -> list[XAccount]:
         """Return full public profiles followed by the user when supported."""
         ...
 
@@ -80,10 +80,10 @@ class TwitterClient(Protocol):
         max_results: int = 20,
         *,
         username: str | None = None,
-    ) -> list[Account]:
+    ) -> list[XAccount]:
         """Return verified follower profiles when supported."""
         ...
 
-    def get_trends(self, max_results: int = 20) -> list[TrendSignal]:
+    def get_trends(self, max_results: int = 20) -> list[XTrend]:
         """Return native X trends when supported."""
         ...

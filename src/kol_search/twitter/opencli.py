@@ -9,7 +9,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from kol_search.models import Account, BackendCapabilities, Post, TrendSignal
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet, XTrend
 from kol_search.twitter.base import TwitterBackendError
 
 
@@ -52,7 +52,7 @@ class OpenCliTwitterClient:
     """Read-only Twitter backend implemented through an authenticated OpenCLI session."""
 
     name = "opencli"
-    capabilities = BackendCapabilities(
+    capabilities = XReadCapabilities(
         user_search=True,
         post_search=True,
         batch_user_lookup=True,
@@ -88,6 +88,16 @@ class OpenCliTwitterClient:
             "fallback_count": 0,
         }
         self.warnings: list[str] = []
+
+    def begin_run(self) -> None:
+        """Reset per-job diagnostics while preserving the connected profile."""
+
+        self.diagnostics = {
+            "active_backend": self.name,
+            "backend_calls": {self.name: 0},
+            "fallback_count": 0,
+        }
+        self.warnings.clear()
 
     def _id(self, username: str) -> str:
         handle = username.lstrip("@").strip()
@@ -147,7 +157,7 @@ class OpenCliTwitterClient:
             raise TwitterBackendError("OpenCLI returned an unexpected response shape.")
         return [item for item in payload if isinstance(item, dict)]
 
-    def _account(self, item: dict[str, Any]) -> Account:
+    def _account(self, item: dict[str, Any]) -> XAccount:
         user = item.get("user") or item.get("author_info") or {}
         if not isinstance(user, dict):
             user = {}
@@ -159,7 +169,7 @@ class OpenCliTwitterClient:
             or user.get("username")
             or ""
         ).lstrip("@")
-        return Account(
+        return XAccount(
             id=self._id(username),
             username=username,
             name=item.get("name") or user.get("name"),
@@ -174,13 +184,13 @@ class OpenCliTwitterClient:
             raw={"source_backend": self.name, "opencli": item},
         )
 
-    def _post(self, item: dict[str, Any]) -> Post:
+    def _post(self, item: dict[str, Any]) -> XTweet:
         username = str(item.get("author") or "").lstrip("@") or None
         text = str(item.get("text") or "")
         post_id = str(item.get("id") or "")
         reply_to = item.get("in_reply_to_status_id") or item.get("reply_to_id")
         quoted_id = item.get("quoted_tweet_id") or item.get("quote_id")
-        return Post(
+        return XTweet(
             id=post_id,
             author_id=self._id(username) if username else "",
             author_username=username,
@@ -210,7 +220,7 @@ class OpenCliTwitterClient:
 
     def search_tweets(
         self, query: str, max_results: int = 40, since_id: str | None = None
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         effective = query
         if since_id:
             # OpenCLI/X search does not support since_id directly; keep the API surface compatible.
@@ -220,15 +230,19 @@ class OpenCliTwitterClient:
         )
         return [self._post(item) for item in rows][:max_results]
 
-    def search_users(self, query: str, max_results: int = 100) -> list[Account]:
+    def search_users(self, query: str, max_results: int = 100) -> list[XAccount]:
         target = max(1, min(max_results, self.capabilities.user_search_page_size))
         rows = self._run("search", query, "--product", "top", "--limit", str(target * 2))
         handles = list(
             dict.fromkeys(str(item.get("author") or "").lstrip("@") for item in rows)
         )
-        return self.get_users_by_usernames([handle for handle in handles if handle])[:target]
+        # Profile hydration is one Browser Bridge command per handle. Bound that
+        # work before issuing requests; slicing only after hydration made a
+        # 20-result search perform as many as 40 slow profile calls.
+        selected = [handle for handle in handles if handle][:target]
+        return self.get_users_by_usernames(selected)
 
-    def get_user_by_username(self, username: str) -> Account | None:
+    def get_user_by_username(self, username: str) -> XAccount | None:
         handle = username.lstrip("@")
         rows = self._run("profile", handle)
         if not rows:
@@ -239,8 +253,8 @@ class OpenCliTwitterClient:
             account.id = self._id(handle)
         return account
 
-    def get_users_by_usernames(self, usernames: list[str]) -> list[Account]:
-        output: list[Account] = []
+    def get_users_by_usernames(self, usernames: list[str]) -> list[XAccount]:
+        output: list[XAccount] = []
         for username in dict.fromkeys(value.lstrip("@") for value in usernames if value):
             try:
                 account = self.get_user_by_username(username)
@@ -260,7 +274,7 @@ class OpenCliTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         handle = (username or user_id.removeprefix("opencli:")).lstrip("@")
         rows = self._run("tweets", handle, "--limit", str(max_results))
         posts = [self._post(item) for item in rows]
@@ -269,7 +283,7 @@ class OpenCliTwitterClient:
             post.author_username = post.author_username or handle
         return posts[:max_results]
 
-    def get_followings(self, username: str, max_results: int = 20) -> list[Account]:
+    def get_followings(self, username: str, max_results: int = 20) -> list[XAccount]:
         rows = self._run("following", username.lstrip("@"), "--limit", str(max_results))
         return [self._account(item) for item in rows][:max_results]
 
@@ -279,12 +293,12 @@ class OpenCliTwitterClient:
         max_results: int = 20,
         *,
         username: str | None = None,
-    ) -> list[Account]:
+    ) -> list[XAccount]:
         return []
 
-    def get_trends(self, max_results: int = 20) -> list[TrendSignal]:
+    def get_trends(self, max_results: int = 20) -> list[XTrend]:
         rows = self._run("trending", "--limit", str(max_results))
-        output: list[TrendSignal] = []
+        output: list[XTrend] = []
         for rank, item in enumerate(rows, 1):
             name = str(
                 item.get("name")
@@ -296,7 +310,7 @@ class OpenCliTwitterClient:
             if not name:
                 continue
             output.append(
-                TrendSignal(
+                XTrend(
                     name=name,
                     rank=_as_int(item.get("rank")) or rank,
                     post_count=_as_int(

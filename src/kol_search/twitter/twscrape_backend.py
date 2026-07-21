@@ -4,12 +4,12 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
 from kol_search.twitter.base import TwitterBackendError
 
 
-def _parse_user(u: Any) -> Account:
-    return Account(
+def _parse_user(u: Any) -> XAccount:
+    return XAccount(
         id=str(getattr(u, "id", "") or ""),
         username=str(getattr(u, "username", "") or getattr(u, "screen_name", "") or ""),
         name=getattr(u, "displayname", None) or getattr(u, "name", None),
@@ -24,7 +24,7 @@ def _parse_user(u: Any) -> Account:
     )
 
 
-def _parse_tweet(t: Any) -> Post:
+def _parse_tweet(t: Any) -> XTweet:
     user = getattr(t, "user", None)
     author_username = None
     author_id = str(getattr(t, "user_id", "") or getattr(t, "userId", "") or "")
@@ -46,7 +46,7 @@ def _parse_tweet(t: Any) -> Post:
     )
     quoted = getattr(t, "quotedTweet", None)
     quoted_id = getattr(quoted, "id", None) if quoted is not None else None
-    return Post(
+    return XTweet(
         id=post_id,
         author_id=author_id,
         author_username=str(author_username).lstrip("@") if author_username else None,
@@ -87,7 +87,7 @@ class TwscrapeTwitterClient:
     """
 
     name = "twscrape"
-    capabilities = BackendCapabilities(
+    capabilities = XReadCapabilities(
         user_search=False,
         batch_user_lookup=False,
         user_search_page_size=0,
@@ -145,10 +145,10 @@ class TwscrapeTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
-    ) -> list[Post]:
-        async def _inner() -> list[Post]:
+    ) -> list[XTweet]:
+        async def _inner() -> list[XTweet]:
             await self._ensure_ready()
-            posts: list[Post] = []
+            posts: list[XTweet] = []
             n = 0
             async for t in self._api.search(query, limit=max_results):
                 posts.append(_parse_tweet(t))
@@ -167,13 +167,13 @@ class TwscrapeTwitterClient:
                 hint="Research-only. Prefer official/third_party when possible. See README.md.",
             ) from e
 
-    def search_users(self, query: str, max_results: int = 100) -> list[Account]:
+    def search_users(self, query: str, max_results: int = 100) -> list[XAccount]:
         return []
 
-    def get_user_by_username(self, username: str) -> Account | None:
+    def get_user_by_username(self, username: str) -> XAccount | None:
         username = username.lstrip("@")
 
-        async def _inner() -> Account | None:
+        async def _inner() -> XAccount | None:
             await self._ensure_ready()
             u = await self._api.user_by_login(username)
             return _parse_user(u) if u else None
@@ -185,8 +185,8 @@ class TwscrapeTwitterClient:
         except Exception as e:
             raise TwitterBackendError(f"twscrape get user failed: {e}") from e
 
-    def get_users_by_usernames(self, usernames: list[str]) -> list[Account]:
-        out: list[Account] = []
+    def get_users_by_usernames(self, usernames: list[str]) -> list[XAccount]:
+        out: list[XAccount] = []
         for u in usernames:
             acc = self.get_user_by_username(u)
             if acc:
@@ -200,10 +200,10 @@ class TwscrapeTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
-    ) -> list[Post]:
-        async def _inner() -> list[Post]:
+    ) -> list[XTweet]:
+        async def _inner() -> list[XTweet]:
             await self._ensure_ready()
-            posts: list[Post] = []
+            posts: list[XTweet] = []
             n = 0
             # twscrape uses user id int often
             try:

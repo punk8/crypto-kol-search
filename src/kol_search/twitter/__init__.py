@@ -1,4 +1,4 @@
-from kol_search.twitter.base import TwitterBackendError, TwitterClient
-from kol_search.twitter.factory import create_twitter_client
+from kol_search.twitter.base import TwitterBackendError, XReadProvider
+from kol_search.twitter.factory import create_x_read_provider
 
-__all__ = ["TwitterClient", "TwitterBackendError", "create_twitter_client"]
+__all__ = ["XReadProvider", "TwitterBackendError", "create_x_read_provider"]

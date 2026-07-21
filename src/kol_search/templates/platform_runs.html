@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ platform.name }} 任务运行 · Crypto KOL Search{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/platforms.css">
+<div class="platform-page platform-runs-page" style="--platform-accent: {{ platform.accent_color }}">
+  <nav class="platform-breadcrumb" aria-label="面包屑"><a href="{{ urls.center }}">平台中心</a><span>/</span><a href="{{ urls.workspace }}">{{ platform.name }} 工作台</a><span>/</span><span aria-current="page">任务运行</span></nav>
+
+  <section class="platform-workspace-head">
+    <div class="platform-workspace-identity">
+      <span class="platform-mark platform-mark--large" aria-hidden="true">{{ platform.short_name }}</span>
+      <div><p class="eyebrow">{{ platform.platform_id }} AUTOMATION RUNS</p><h1>任务运行</h1><p>集中查看 {{ platform.name }} 的后台任务、实时进度和失败原因。</p></div>
+    </div>
+    <a class="button ghost" href="{{ urls.workspace }}">返回工作台</a>
+  </section>
+
+  {% if feedback %}<div class="notice success platform-task-feedback" role="status"><span><strong>{{ feedback.title }}</strong>{{ feedback.message }}</span></div>{% endif %}
+
+  <section class="platform-summary" aria-label="任务概览">
+    <article><span>执行中</span><strong>{{ status_counts.running }}</strong><small>后台正在处理</small></article>
+    <article><span>等待执行</span><strong>{{ status_counts.queued }}</strong><small>按优先级排队</small></article>
+    <article><span>已完成</span><strong>{{ status_counts.succeeded }}</strong><small>最近 100 条任务</small></article>
+    <article><span>失败</span><strong>{{ status_counts.failed }}</strong><small>可在下方查看原因</small></article>
+  </section>
+
+  {% include "platform_runs_fragment.html" %}
+</div>
+{% endblock %}

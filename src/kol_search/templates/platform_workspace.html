@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}{{ platform.name }} 工作台 · Crypto KOL Search{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/platforms.css">
+{% set capability_labels = {
+  "account_search": "账号搜索",
+  "content_search": "内容搜索",
+  "timeline/feed": "时间线 / Feed",
+  "relations": "关系发现",
+  "native_trends": "原生趋势",
+  "comment": "评论",
+  "dm": "私信",
+  "owned_publish": "自有发布",
+  "media_upload": "媒体上传",
+  "analytics": "效果分析"
+} %}
+{% set connection_labels = {
+  "connected": "连接正常",
+  "degraded": "部分可用",
+  "disconnected": "未连接",
+  "disabled": "已停用"
+} %}
+<div class="platform-page platform-workspace-page" style="--platform-accent: {{ platform.accent_color }}">
+  <nav class="platform-breadcrumb" aria-label="面包屑"><a href="{{ urls.center }}">平台中心</a><span>/</span><span aria-current="page">{{ platform.name }}</span></nav>
+
+  <section class="platform-workspace-head">
+    <div class="platform-workspace-identity">
+      <span class="platform-mark platform-mark--large" aria-hidden="true">{{ platform.short_name }}</span>
+      <div>
+        <p class="eyebrow">{{ platform.platform_id }} WORKSPACE · v{{ platform.version }}</p>
+        <h1>{{ platform.name }} 工作台</h1>
+        <p>{{ platform.description }}</p>
+        <span class="platform-health platform-health--{{ platform.connection_status }}"><i aria-hidden="true"></i>{{ connection_labels.get(platform.connection_status, platform.connection_status) }}{% if platform.connection_message %} · {{ platform.connection_message }}{% endif %}</span>
+      </div>
+    </div>
+    <div class="platform-head-actions">
+      {% if platform.can_scan %}<form action="{{ urls.scan }}" method="post"><input type="hidden" name="platform_id" value="{{ platform.platform_id }}"><button type="submit" class="ghost">立即扫描信号</button></form>{% endif %}
+    </div>
+  </section>
+
+  {% if platform.kill_switch %}<div class="notice warning" role="status"><span>{{ platform.name }} 的写入已暂停；发现与只读信号扫描仍会继续。</span><a href="{{ urls.safety }}">前往安全控制</a></div>{% endif %}
+  {% if feedback %}<div class="notice success platform-task-feedback" role="status"><span><strong>{{ feedback.title }}</strong>{{ feedback.message }}</span><a href="{{ urls.runs }}">查看任务进度</a></div>{% endif %}
+  {% for item in alerts %}<a class="notice {{ 'warning' if item.severity in ['warning', 'critical'] else '' }} platform-inline-alert" href="{{ item.href }}"><strong>{{ item.title }}</strong><span>{{ item.message }}</span></a>{% endfor %}
+
+  <nav class="platform-tabs" aria-label="工作台导航">
+    <a href="#inbox">{{ platform.get('metadata', {}).get('feed_label', '热点机会') }}{% if metrics.open_opportunities %}<span>{{ metrics.open_opportunities }}</span>{% endif %}</a>
+    <a href="#discover">发现</a>
+    <a href="#library">KOL 库</a>
+    <a href="#automation">自动化</a>
+    <a href="{{ urls.runs }}">任务运行</a>
+  </nav>
+
+  <section class="platform-summary" aria-label="{{ platform.name }} 概览">
+    <article><span>Active KOL</span><strong>{{ metrics.active_kols }}</strong><small>{% if platform.automatic_kol_management %}{{ metrics.candidate_kols }} 个由后台持续观察{% else %}{{ metrics.review_kols }} 个等待复核{% endif %}</small></article>
+    <article><span>开放机会</span><strong>{{ metrics.open_opportunities }}</strong><small>{{ metrics.planned_opportunities }} 个已进入计划</small></article>
+    <article><span>今日自动执行</span><strong>{{ metrics.succeeded_actions_today }}</strong><small>{{ metrics.review_actions }} 个需人工审核</small></article>
+    <article><span>下次自动扫描</span><strong class="platform-summary-time">{{ metrics.next_scan_at }}</strong><small>{{ platform.scan_interval_label }}</small></article>
+  </section>
+
+  <div class="platform-workspace-grid">
+    <main class="platform-workspace-main">
+      {% block opportunity_feed %}
+      <section class="platform-panel" id="inbox" aria-labelledby="inbox-title">
+        <div class="platform-panel-head">
+          <div><p class="eyebrow">TREND OPPORTUNITIES</p><h2 id="inbox-title">热点机会</h2><p>机会分数仅在 {{ platform.name }} 内排序。</p></div>
+          <a href="{{ urls.opportunities }}">查看全部</a>
+        </div>
+        <div class="platform-opportunity-list">
+          {% for item in opportunities %}
+          <article class="platform-opportunity">
+            <div class="platform-score"><strong>{{ item.priority }}</strong><span>优先级</span></div>
+            <div>
+              <div class="platform-opportunity-title"><span class="platform-kind">{{ item.kind_label }}</span><h3>{{ item.title }}</h3><span class="status {{ item.status }}">{{ item.status }}</span></div>
+              <p>{{ item.summary }}</p>
+              <div class="platform-evidence">{% for reason in item.reasons %}<span>{{ reason }}</span>{% endfor %}</div>
+              <footer><span>{{ item.native_object_label }} · {{ item.created_at }}</span><div>{% if item.native_url %}<a href="{{ item.native_url }}" target="_blank" rel="noopener noreferrer">查看原始证据</a>{% endif %}{% if item.review_url %}<a class="button ghost" href="{{ item.review_url }}">{{ item.review_label }}</a>{% endif %}{% if item.can_dismiss %}<form action="{{ item.dismiss_url }}" method="post"><button class="ghost" type="submit">忽略机会</button></form>{% endif %}</div></footer>
+            </div>
+          </article>
+          {% else %}
+          <div class="platform-panel-empty"><strong>当前没有开放机会</strong><p>可以立即扫描信号，或先扩充种子与 Active KOL。</p></div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endblock %}
+
+      <section class="platform-panel" id="discover" aria-labelledby="discover-title">
+        <div class="platform-panel-head"><div><p class="eyebrow">MANUAL DISCOVERY</p><h2 id="discover-title">手动主题发现</h2><p>结果会与自动扫描共享同一个 {{ platform.name }} KOL 库。</p></div></div>
+        {% if 'account_search' in platform.capabilities or 'content_search' in platform.capabilities or 'relations' in platform.capabilities %}
+        <form action="{{ urls.discover }}" method="post" class="platform-discovery-form">
+          <input type="hidden" name="platform_id" value="{{ platform.platform_id }}">
+          <label>主题或关键词<input name="query" value="{{ discovery.default_query }}" placeholder="关系扩展时可留空"></label>
+          <label>发现来源<select name="source">
+            {% if 'account_search' in platform.capabilities %}<option value="accounts">账号搜索</option>{% endif %}
+            {% if 'content_search' in platform.capabilities %}<option value="content">内容搜索</option>{% endif %}
+            {% if 'relations' in platform.capabilities %}<option value="relations">种子关系扩展</option>{% endif %}
+          </select></label>
+          <label>结果上限<input name="limit" type="number" min="1" max="100" value="{{ discovery.default_limit }}"></label>
+          <button type="submit"{% if active_discovery %} disabled aria-disabled="true"{% endif %}>{{ '发现进行中…' if active_discovery else '开始发现' }}</button>
+        </form>
+        {% else %}
+        <div class="platform-capability-empty"><strong>{{ platform.name }} 尚未开放搜索能力</strong><p>热点机会仍可使用已接入的数据来源。</p></div>
+        {% endif %}
+      </section>
+
+      <section class="platform-panel" id="library" aria-labelledby="library-title">
+        <div class="platform-panel-head"><div><p class="eyebrow">PLATFORM LIBRARY</p><h2 id="library-title">{{ platform.name }} KOL 库</h2></div><span>{{ '后台自动管理' if platform.automatic_kol_management else '人工覆盖可用' }}</span></div>
+        {% if not platform.automatic_kol_management %}<form action="{{ urls.seeds }}" method="post" class="platform-seed-form">
+          <label>种子账号 ID / handle<input name="native_id" placeholder="X 可填写 @handle；小红书填写用户 ID" required></label>
+          <label>显示名称（可选）<input name="display_name" placeholder="便于识别"></label>
+          <button type="submit">添加长期种子</button>
+        </form>{% endif %}
+        <div class="platform-kol-list">
+          {% for item in kols %}
+          <div class="platform-kol">
+            <span class="platform-avatar" aria-hidden="true">{{ item.initials }}</span>
+            <span><strong>{{ item.display_name }}</strong><small>{{ item.handle }} · {{ item.native_id }}</small>{% if item.reasons %}<small>{{ item.reasons|join('；') }}</small>{% endif %}</span>
+            <span><strong>{{ "%.2f"|format(item.score) }}</strong><small>平台内评分</small></span>
+            <span class="status {{ item.status }}">{{ item.status }}</span>
+            <div class="platform-kol-actions">
+              {% if not platform.automatic_kol_management %}<form action="{{ item.status_url }}" method="post"><select name="status"><option value="seed"{% if item.status == 'seed' %} selected{% endif %}>seed</option><option value="candidate"{% if item.status == 'candidate' %} selected{% endif %}>candidate</option><option value="active"{% if item.status == 'active' %} selected{% endif %}>active</option><option value="review"{% if item.status == 'review' %} selected{% endif %}>review</option><option value="paused"{% if item.status == 'paused' %} selected{% endif %}>paused</option><option value="rejected"{% if item.status == 'rejected' %} selected{% endif %}>rejected</option></select><button class="ghost">人工覆盖</button></form>{% else %}<span class="platform-auto-managed">自动评分</span>{% endif %}
+              {% if 'dm' in platform.capabilities %}
+              <details>
+                <summary>私信与会话</summary>
+                <form action="{{ urls.dm }}" method="post">
+                  <input type="hidden" name="native_id" value="{{ item.native_id }}">
+                  <label>已验证会话 ID（可选）<input name="conversation_id" placeholder="首次冷私信请留空"></label>
+                  <label><input type="checkbox" name="has_valid_conversation" value="true">作为已验证会话的后续私信</label>
+                  <textarea name="draft" rows="3" placeholder="首次冷私信必须人工审核" required></textarea>
+                  <button>创建私信动作</button>
+                </form>
+                <form action="{{ urls.conversation }}" method="post">
+                  <input type="hidden" name="native_id" value="{{ item.native_id }}">
+                  <label>会话 ID<input name="conversation_id" required></label>
+                  <label>有效会话证据<input name="evidence" placeholder="例如：已核对对方入站回复" required></label>
+                  <button class="ghost">人工确认有效会话</button>
+                </form>
+              </details>
+              {% endif %}
+            </div>
+          </div>
+          {% else %}
+          <div class="platform-panel-empty"><strong>还没有 KOL</strong><p>先添加种子，或运行一次手动发现。</p></div>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+
+    <aside class="platform-workspace-side" id="automation">
+      <section class="platform-panel">
+        <div class="platform-panel-head"><div><p class="eyebrow">CAPABILITIES</p><h2>能力与安全边界</h2></div></div>
+        <div class="platform-capability-matrix">
+          {% for capability in all_capabilities %}
+          <div class="{{ 'is-enabled' if capability.id in platform.capabilities else 'is-disabled' }}"><span>{{ capability_labels.get(capability.id, capability.label) }}</span><strong>{{ '已启用' if capability.id in platform.capabilities else '未接入' }}</strong></div>
+          {% endfor %}
+        </div>
+        <p class="platform-safety-note">{{ platform.safety_summary }}</p>
+      </section>
+
+      <section class="platform-panel">
+        <div class="platform-panel-head"><div><p class="eyebrow">ACTION QUEUE</p><h2>最近动作</h2></div><a href="{{ urls.actions }}">查看队列</a></div>
+        <div class="platform-action-list">
+          {% for item in recent_actions %}
+          <div class="platform-action-row"><a href="{{ item.receipt_url or item.detail_url }}"{% if item.receipt_url %} target="_blank" rel="noopener noreferrer"{% endif %}><span class="platform-action-kind">{{ item.kind_label }}</span><span><strong>{{ item.target_label }}</strong><small>{{ item.updated_at }}</small>{% if item.policy_explanation %}<small>策略：{{ item.policy_explanation }}</small>{% endif %}{% if item.external_id %}<small>回执：{{ item.external_id }}</small>{% endif %}{% if item.error %}<small class="error">{{ item.error }}</small>{% endif %}</span><span class="status {{ item.status }}">{{ item.status }}</span></a>{% if item.status == 'needs_review' %}<form action="{{ item.approval_url }}" method="post"><textarea name="final_text" rows="2" required>{{ item.draft }}</textarea><div class="platform-action-buttons"><button>批准并排队</button><button class="ghost" type="submit" formaction="{{ item.cancel_url }}" formnovalidate>取消</button></div></form>{% elif item.status in ['proposed', 'scheduled'] %}<form action="{{ item.cancel_url }}" method="post"><button class="ghost" type="submit">取消动作</button></form>{% elif item.status == 'confirmation_required' %}<form action="{{ item.resolve_url }}" method="post" class="platform-resolution-form"><label>可选回执链接<input name="receipt_url" type="url" placeholder="https://…"></label><label>处理备注<input name="note" placeholder="人工核验结果"></label><div class="platform-action-buttons"><button name="resolution" value="succeeded">确认成功</button><button class="ghost" name="resolution" value="failed">确认失败</button><button class="ghost" name="resolution" value="cancelled">取消</button></div></form>{% endif %}</div>
+          {% else %}
+          <div class="platform-panel-empty platform-panel-empty--compact"><strong>暂无动作</strong><p>通过策略的机会会进入这里。</p></div>
+          {% endfor %}
+        </div>
+      </section>
+
+    </aside>
+  </div>
+</div>
+{% endblock %}

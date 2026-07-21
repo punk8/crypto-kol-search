@@ -3,19 +3,19 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from kol_search.settings import Settings, get_settings
-from kol_search.twitter.base import TwitterBackendError, TwitterClient
+from kol_search.twitter.base import TwitterBackendError, XReadProvider
 from kol_search.twitter.mock import MockTwitterClient
 from kol_search.twitter.official import OfficialTwitterClient
 from kol_search.twitter.third_party import ThirdPartyTwitterClient
 
 
-def create_twitter_client(
+def create_x_read_provider(
     backend: str | None = None,
     settings: Settings | None = None,
     resolve_account_id: Callable[[str, str], str] | None = None,
-) -> TwitterClient:
+) -> XReadProvider:
     """
-    Build a TwitterClient for the selected backend.
+    Build the selected X read provider.
 
     backend: mock | official | third_party | twitterapi_io | twscrape | opencli
     """
@@ -47,7 +47,7 @@ def create_twitter_client(
             supports_user_search=settings.twitter_tp_supports_user_search,
         )
 
-    def build_opencli() -> TwitterClient:
+    def build_opencli() -> XReadProvider:
         from kol_search.twitter.opencli import OpenCliTwitterClient
 
         return OpenCliTwitterClient(

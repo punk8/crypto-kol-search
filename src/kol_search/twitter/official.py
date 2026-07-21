@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from kol_search.models import Account, BackendCapabilities, Post
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
 from kol_search.twitter.base import TwitterBackendError
 
 API_BASE = "https://api.x.com/2"
@@ -25,9 +25,9 @@ def _tweet_fields() -> str:
     )
 
 
-def _parse_account(data: dict[str, Any]) -> Account:
+def _parse_account(data: dict[str, Any]) -> XAccount:
     metrics = data.get("public_metrics") or {}
-    return Account(
+    return XAccount(
         id=str(data["id"]),
         username=data.get("username", ""),
         name=data.get("name"),
@@ -58,7 +58,7 @@ def _mentions_from_entities(entities: dict[str, Any] | None) -> list[str]:
     return out
 
 
-def _parse_post(data: dict[str, Any], users_by_id: dict[str, Account] | None = None) -> Post:
+def _parse_post(data: dict[str, Any], users_by_id: dict[str, XAccount] | None = None) -> XTweet:
     metrics = data.get("public_metrics") or {}
     author_id = str(data.get("author_id", ""))
     author_username = None
@@ -67,7 +67,7 @@ def _parse_post(data: dict[str, Any], users_by_id: dict[str, Account] | None = N
     references = data.get("referenced_tweets") or []
     reference = references[0] if references else {}
     post_id = str(data["id"])
-    return Post(
+    return XTweet(
         id=post_id,
         author_id=author_id,
         author_username=author_username,
@@ -96,7 +96,7 @@ class OfficialTwitterClient:
     """X API v2 with Bearer token (app-only)."""
 
     name = "official"
-    capabilities = BackendCapabilities(user_search=True)
+    capabilities = XReadCapabilities(user_search=True)
 
     def __init__(self, bearer_token: str, timeout: float = 30.0) -> None:
         if not bearer_token:
@@ -158,7 +158,7 @@ class OfficialTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         # API allows 10–100
         n = max(10, min(100, max_results))
         params: dict[str, Any] = {
@@ -171,19 +171,19 @@ class OfficialTwitterClient:
         if since_id:
             params["since_id"] = since_id
         data = self._request("GET", "/tweets/search/recent", params=params)
-        users_by_id: dict[str, Account] = {}
+        users_by_id: dict[str, XAccount] = {}
         for u in (data.get("includes") or {}).get("users") or []:
             acc = _parse_account(u)
             users_by_id[acc.id] = acc
-        posts: list[Post] = []
+        posts: list[XTweet] = []
         for t in data.get("data") or []:
             posts.append(_parse_post(t, users_by_id))
         return posts[:max_results]
 
-    def search_users(self, query: str, max_results: int = 100) -> list[Account]:
+    def search_users(self, query: str, max_results: int = 100) -> list[XAccount]:
         remaining = max(1, min(1000, max_results))
         token: str | None = None
-        out: list[Account] = []
+        out: list[XAccount] = []
         while remaining > 0:
             params: dict[str, Any] = {
                 "query": query[:50],
@@ -201,7 +201,7 @@ class OfficialTwitterClient:
                 break
         return out[:max_results]
 
-    def get_user_by_username(self, username: str) -> Account | None:
+    def get_user_by_username(self, username: str) -> XAccount | None:
         username = username.lstrip("@")
         data = self._request(
             "GET",
@@ -212,10 +212,10 @@ class OfficialTwitterClient:
             return None
         return _parse_account(data["data"])
 
-    def get_users_by_usernames(self, usernames: list[str]) -> list[Account]:
+    def get_users_by_usernames(self, usernames: list[str]) -> list[XAccount]:
         # API allows up to 100 per request
         clean = [u.lstrip("@") for u in usernames if u]
-        out: list[Account] = []
+        out: list[XAccount] = []
         for i in range(0, len(clean), 100):
             batch = clean[i : i + 100]
             data = self._request(
@@ -237,7 +237,7 @@ class OfficialTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
-    ) -> list[Post]:
+    ) -> list[XTweet]:
         n = max(5, min(100, max_results))
         data = self._request(
             "GET",

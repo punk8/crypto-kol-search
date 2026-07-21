@@ -6,13 +6,13 @@
   <title>{% block title %}Crypto KOL Search{% endblock %}</title>
   <link rel="icon" href="/static/avatar.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
-  <link rel="stylesheet" href="/static/radar.css">
+  {% block head_extra %}{% endblock %}
   <script defer src="/static/htmx-lite.js"></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/">Crypto KOL Search</a>
-    <nav><a href="/radar/people">人物雷达</a><a href="/radar/topics?refresh=true">趋势雷达</a><a href="/publishing">主动发布</a><a href="/operations">推广操作</a><a href="/library">KOL 总库</a><a href="/">任务</a><a href="/settings/brand" aria-label="品牌设置" title="品牌设置">设置</a></nav>
+    <a class="brand" href="/">KOL Growth OS</a>
+    <nav><a href="/">平台中心</a><a href="/settings/brand" aria-label="配置" title="配置">配置</a></nav>
   </header>
   <main class="container">{% block content %}{% endblock %}</main>
 </body>

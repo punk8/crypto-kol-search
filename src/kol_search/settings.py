@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field
@@ -23,6 +23,9 @@ class Settings(BaseSettings):
 
     twitter_backend: BackendName = Field(default="twitterapi_io", alias="TWITTER_BACKEND")
     enable_mock_backend: bool = Field(default=False, alias="KOL_ENABLE_MOCK_BACKEND")
+    enabled_platforms: str = Field(
+        default="x,xiaohongshu", alias="KOL_ENABLED_PLATFORMS"
+    )
 
     x_bearer_token: str | None = Field(default=None, alias="X_BEARER_TOKEN")
     x_api_key: str | None = Field(default=None, alias="X_API_KEY")
@@ -65,20 +68,34 @@ class Settings(BaseSettings):
     web_host: str = Field(default="127.0.0.1", alias="KOL_WEB_HOST")
     web_port: int = Field(default=8765, alias="KOL_WEB_PORT")
     timezone: str = Field(default="Asia/Shanghai", alias="KOL_TIMEZONE")
-    weekly_day: str = Field(default="sun", alias="KOL_WEEKLY_DAY")
-    weekly_hour: int = Field(default=3, alias="KOL_WEEKLY_HOUR")
-    enable_weekly_refresh: bool = Field(default=True, alias="KOL_ENABLE_WEEKLY_REFRESH")
-    enable_signal_scan: bool = Field(default=False, alias="KOL_ENABLE_SIGNAL_SCAN")
+    enable_signal_scan: bool = Field(default=True, alias="KOL_ENABLE_SIGNAL_SCAN")
     signal_interval_minutes: int = Field(default=30, alias="KOL_SIGNAL_INTERVAL_MINUTES")
-    signal_core_accounts: int = Field(default=20, alias="KOL_SIGNAL_CORE_ACCOUNTS")
-    signal_rotation_accounts: int = Field(default=20, alias="KOL_SIGNAL_ROTATION_ACCOUNTS")
+    x_signal_interval_minutes: int | None = Field(
+        default=None, alias="KOL_X_SIGNAL_INTERVAL_MINUTES"
+    )
+    xiaohongshu_signal_interval_minutes: int | None = Field(
+        default=None, alias="KOL_XIAOHONGSHU_SIGNAL_INTERVAL_MINUTES"
+    )
+    x_trends_per_scan: int = Field(default=5, alias="KOL_X_TRENDS_PER_SCAN")
+    x_tweets_per_trend: int = Field(default=10, alias="KOL_X_TWEETS_PER_TREND")
     signal_posts_per_account: int = Field(default=20, alias="KOL_SIGNAL_POSTS_PER_ACCOUNT")
     signal_reply_limit: int = Field(default=20, alias="KOL_SIGNAL_REPLY_LIMIT")
-    signal_topic_limit: int = Field(default=10, alias="KOL_SIGNAL_TOPIC_LIMIT")
+    platform_account_batch_size: int = Field(
+        default=50, alias="KOL_PLATFORM_ACCOUNT_BATCH_SIZE"
+    )
     signal_opportunity_ttl_hours: int = Field(
         default=24, alias="KOL_SIGNAL_OPPORTUNITY_TTL_HOURS"
     )
-    trend_cache_minutes: int = Field(default=15, alias="KOL_TREND_CACHE_MINUTES")
+    discovery_interval_hours: int = Field(
+        default=24, alias="KOL_DISCOVERY_INTERVAL_HOURS"
+    )
+    inactive_pause_days: int = Field(default=90, alias="KOL_INACTIVE_PAUSE_DAYS")
+    review_queue_enabled: bool = Field(
+        default=False, alias="KOL_REVIEW_QUEUE_ENABLED"
+    )
+    action_dispatch_seconds: int = Field(
+        default=60, alias="KOL_ACTION_DISPATCH_SECONDS"
+    )
 
     admin_username: str = Field(default="admin", alias="KOL_ADMIN_USERNAME")
     admin_password: str | None = Field(default=None, alias="KOL_ADMIN_PASSWORD")
@@ -89,44 +106,29 @@ class Settings(BaseSettings):
         default="https://api.postiz.com/public/v1", alias="POSTIZ_API_URL"
     )
     postiz_api_key: str | None = Field(default=None, alias="POSTIZ_API_KEY")
-    postiz_integration_cache_minutes: int = Field(
-        default=15, alias="POSTIZ_INTEGRATION_CACHE_MINUTES"
-    )
-    publishing_media_dir: str = Field(
-        default="data/publishing_media", alias="KOL_PUBLISHING_MEDIA_DIR"
-    )
     comment_daily_limit: int = Field(default=10, alias="KOL_COMMENT_DAILY_LIMIT")
     comment_hourly_limit: int = Field(default=3, alias="KOL_COMMENT_HOURLY_LIMIT")
     dm_daily_limit: int = Field(default=5, alias="KOL_DM_DAILY_LIMIT")
     dm_hourly_limit: int = Field(default=2, alias="KOL_DM_HOURLY_LIMIT")
     author_cooldown_days: int = Field(default=7, alias="KOL_AUTHOR_COOLDOWN_DAYS")
     global_kill_switch: bool = Field(default=False, alias="KOL_GLOBAL_KILL_SWITCH")
-
-    max_user_queries: int = Field(default=8, alias="KOL_MAX_USER_QUERIES")
-    max_post_queries: int = Field(default=8, alias="KOL_MAX_POST_QUERIES")
-    max_candidates: int = Field(default=500, alias="KOL_MAX_CANDIDATES")
-    max_enriched_candidates: int = Field(default=200, alias="KOL_MAX_ENRICHED_CANDIDATES")
-    max_contact_accounts: int = Field(default=100, alias="KOL_MAX_CONTACT_ACCOUNTS")
-    max_site_pages: int = Field(default=5, alias="KOL_MAX_SITE_PAGES")
-    use_configured_seeds: bool = Field(default=True, alias="KOL_USE_CONFIGURED_SEEDS")
+    auto_execution_enabled: bool = Field(
+        default=False, alias="KOL_AUTO_EXECUTION_ENABLED"
+    )
+    auto_comment_score: float = Field(default=80.0, alias="KOL_AUTO_COMMENT_SCORE")
+    auto_dm_followup_score: float = Field(
+        default=80.0, alias="KOL_AUTO_DM_FOLLOWUP_SCORE"
+    )
+    auto_publish_score: float = Field(default=80.0, alias="KOL_AUTO_PUBLISH_SCORE")
+    publish_daily_limit: int = Field(default=2, alias="KOL_PUBLISH_DAILY_LIMIT")
+    publish_windows: str = Field(
+        default="09:00-11:00,17:00-20:00", alias="KOL_PUBLISH_WINDOWS"
+    )
 
     kol_db_path: str = Field(default="data/kol_search.db", alias="KOL_DB_PATH")
-    kol_output_dir: str = Field(default="output", alias="KOL_OUTPUT_DIR")
 
     def db_path(self) -> Path:
         p = Path(self.kol_db_path)
-        if not p.is_absolute():
-            p = PROJECT_ROOT / p
-        return p
-
-    def output_dir(self) -> Path:
-        p = Path(self.kol_output_dir)
-        if not p.is_absolute():
-            p = PROJECT_ROOT / p
-        return p
-
-    def publishing_media_path(self) -> Path:
-        p = Path(self.publishing_media_dir)
         if not p.is_absolute():
             p = PROJECT_ROOT / p
         return p
@@ -215,6 +217,16 @@ class Settings(BaseSettings):
             for value in self.approved_product_domains.split(",")
             if value.strip()
         }
+
+    def platform_ids(self) -> tuple[str, ...]:
+        """Configured platform IDs, preserving order and removing duplicates."""
+        values = [value.strip().lower() for value in self.enabled_platforms.split(",")]
+        return tuple(dict.fromkeys(value for value in values if value))
+
+    def publishing_windows(self) -> tuple[str, ...]:
+        return tuple(
+            value.strip() for value in self.publish_windows.split(",") if value.strip()
+        )
 
     def postiz_ready(self) -> tuple[bool, str | None]:
         return (

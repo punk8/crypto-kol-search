@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}平台中心 · Crypto KOL Search{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/platforms.css">
+{% set connection_labels = {
+  "connected": "连接正常",
+  "degraded": "部分可用",
+  "disconnected": "未连接",
+  "disabled": "已停用"
+} %}
+<div class="platform-page platform-center-page">
+  <section class="platform-center-head">
+    <div>
+      <p class="eyebrow">MULTI-PLATFORM GROWTH CONTROL</p>
+      <h1>平台中心</h1>
+      <p>在每个平台的原生语境中发现 KOL、捕捉机会并管理自动化。这里只汇总运行健康度，不做跨平台影响力排名。</p>
+    </div>
+    <a class="button ghost" href="{{ urls.discovery }}">新建搜索任务</a>
+  </section>
+
+  {% if global_kill_switch %}
+  <div class="notice warning" role="status"><span>全局写入已暂停。只读扫描仍可运行，所有平台的写入动作已停止。</span><a href="{{ urls.safety }}">前往安全控制</a></div>
+  {% endif %}
+
+  <section class="platform-summary" aria-label="运行概览">
+    <article><span>已启用平台</span><strong>{{ summary.enabled_platforms }}</strong><small>共 {{ summary.total_platforms }} 个已注册</small></article>
+    <article><span>运行中任务</span><strong>{{ summary.active_tasks }}</strong><small>{{ summary.queued_tasks }} 个等待执行</small></article>
+    <article><span>待处理机会</span><strong>{{ summary.open_opportunities }}</strong><small>各平台内独立排序</small></article>
+    <article><span>需要关注</span><strong>{{ summary.alert_count }}</strong><small>{{ summary.paused_channels }} 个通道暂停</small></article>
+  </section>
+
+  <section aria-labelledby="registered-platforms-title">
+    <div class="platform-section-title">
+      <div><p class="eyebrow">REGISTERED PLATFORMS</p><h2 id="registered-platforms-title">平台工作台</h2></div>
+      <span>按平台管理原生账号、内容与指标</span>
+    </div>
+    <div class="platform-card-grid">
+      {% for item in platforms %}
+      <article class="platform-card platform-card--{{ item.connection_status }}">
+        <header>
+          <div class="platform-identity">
+            <span class="platform-mark" aria-hidden="true">{{ item.short_name }}</span>
+            <div>
+              <h3>{{ item.name }}</h3>
+              <p>{{ item.platform_id }} · v{{ item.version }}</p>
+            </div>
+          </div>
+          <span class="platform-health platform-health--{{ item.connection_status }}">
+            <i aria-hidden="true"></i>{{ connection_labels.get(item.connection_status, item.connection_status) }}
+          </span>
+        </header>
+
+        {% if item.connection_message %}<p class="platform-connection-message">{{ item.connection_message }}</p>{% endif %}
+
+        <div class="platform-card-metrics">
+          <div><strong>{{ item.metrics.active_kols }}</strong><span>Active KOL</span></div>
+          <div><strong>{{ item.metrics.open_opportunities }}</strong><span>开放机会</span></div>
+          <div><strong>{{ item.metrics.succeeded_actions_today }}</strong><span>今日成功</span></div>
+          <div><strong>{{ item.metrics.paused_channels }}</strong><span>暂停通道</span></div>
+        </div>
+
+        <div class="platform-capabilities" aria-label="{{ item.name }} 已启用能力">
+          {% for capability in item.capabilities %}<span>{{ capability_labels.get(capability, capability) }}</span>{% endfor %}
+        </div>
+
+        <footer>
+          <span>最近扫描<br><strong>{{ item.last_scan_at or '尚未扫描' }}</strong></span>
+          {% if item.enabled %}
+          <a class="button" href="{{ item.workspace_url }}">进入工作台</a>
+          {% else %}
+          <span class="button ghost" aria-disabled="true">平台已停用</span>
+          {% endif %}
+        </footer>
+      </article>
+      {% else %}
+      <div class="platform-empty">
+        <strong>还没有注册平台</strong>
+        <p>注册第一个平台模块后，它的连接状态和工作台会出现在这里。</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="platform-dashboard-grid">
+    <section class="platform-panel" aria-labelledby="alerts-title">
+      <div class="platform-panel-head"><div><p class="eyebrow">ATTENTION</p><h2 id="alerts-title">运行告警</h2></div><span>{{ alerts|length }} 条</span></div>
+      <div class="platform-feed">
+        {% for item in alerts %}
+        <a class="platform-feed-item platform-feed-item--{{ item.severity }}" href="{{ item.href }}">
+          <span class="platform-feed-icon" aria-hidden="true">{{ '!' if item.severity in ['warning', 'critical'] else '·' }}</span>
+          <span><strong>{{ item.title }}</strong><small>{{ item.platform_name }} · {{ item.created_at }}</small><p>{{ item.message }}</p></span>
+        </a>
+        {% else %}
+        <div class="platform-panel-empty"><strong>没有待处理告警</strong><p>所有已启用平台运行正常。</p></div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="platform-panel" aria-labelledby="runs-title">
+      <div class="platform-panel-head"><div><p class="eyebrow">RECENT ACTIVITY</p><h2 id="runs-title">最近任务</h2></div><span>{{ summary.failed_tasks }} 个失败</span></div>
+      <div class="platform-run-list">
+        {% for run in recent_runs %}
+        <a class="platform-run" href="{{ run.detail_url }}">
+          <span class="platform-run-mark">{{ run.platform_short_name }}</span>
+          <span><strong>{{ run.label }}</strong><small>#{{ run.id }} · {{ run.created_at }}</small></span>
+          <span class="platform-run-progress"><i style="width: {{ run.progress }}%"></i></span>
+          <span class="status {{ run.status }}">{{ run.status }}</span>
+        </a>
+        {% else %}
+        <div class="platform-panel-empty"><strong>还没有任务</strong><p>进入平台工作台开始第一次发现。</p></div>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

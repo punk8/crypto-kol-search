@@ -1,231 +1,243 @@
-# X + 小红书四项能力验证文档
+# 多平台自动化重构验证指南
 
-## 1. 范围与证据原则
+本文验证“共享自动化内核 + 平台原生模块 + 独立平台工作台”。默认验收使用 Mock、临时 SQLite 和测试内虚拟视频平台，不需要真实凭据或网络。真实写入必须另行批准，并只面向自有沙盒账号。
 
-本轮只验收 X 和小红书：近期 KOL 搜索、Trend 内容、授权账号评论、官方账号私信。运行环境禁止启用 Mock；Mock/fixtures 只用于 pytest，不能作为产品验收证据。
-
-每项真实证据必须记录：平台、数据源、浏览器配置别名、目标账号/帖子原始链接、采集或发送时间、任务/审计 ID、平台回执及截图。一个平台失败时保留另一个平台结果，并明确显示失败原因；不得用其他平台数据补位。
-
-## 2. 环境与登录
+## 1. 自动化测试
 
 ```bash
 source .venv/bin/activate
-cp .env.example .env
+pytest
+```
 
-# 运行时禁止 Mock
-KOL_ENABLE_MOCK_BACKEND=false
-TWITTER_BACKEND=opencli
-OPENCLI_PROFILE=x-brand
-XIAOHONGSHU_OPENCLI_PROFILE=xhs-brand
+聚焦多平台契约时可以先运行：
 
-# 只有沙盒实发时才开启
-KOL_LIVE_WRITE_ENABLED=false
-KOL_APPROVED_PRODUCT_DOMAINS=product.example.com
+```bash
+pytest \
+  tests/test_platform_kernel.py \
+  tests/test_platform_automation_adapter_contract.py \
+  tests/test_platform_automation_service.py \
+  tests/test_platform_postiz_actions.py \
+  tests/test_platform_postiz_service.py \
+  tests/test_platform_web_cli.py \
+  tests/test_platform_templates.py \
+  tests/test_platform_signal_cursors.py \
+  tests/test_platform_kol_lifecycle.py \
+  tests/test_platform_browser_actions.py \
+  tests/test_platform_native_discovery_risk.py \
+  tests/test_content_intelligence.py \
+  tests/test_automation_repository.py \
+  tests/test_database_rebuild.py
+```
 
-opencli profile list
-opencli --profile x-brand twitter whoami -f json
-opencli --profile xhs-brand xiaohongshu whoami -f json
+完整测试应覆盖以下不变量：
+
+- 共享队列只接受 `manual_discovery`、`discovery_refresh`、`signal_refresh`、`dispatch_actions`、`refresh_outcomes` 5 种核心任务。
+- Worker 使用 `platform_id` 从显式注册表解析处理器，不根据 X/小红书名称选择旧 Pipeline。
+- X 账号/Tweet 与小红书用户/笔记/评论写入不同原生表；同名账号不会合并。
+- 虚拟视频平台以独立 Channel/Video 模型、Repository/schema、Adapter 和能力接入，不依赖通用 Account/Post。
+- 虚拟视频信号可经过共享 `scan_signals` → `build_opportunities` 链路形成带原生 Video 引用的机会，不需要修改核心分发。
+- 一个平台注册任务或健康检查失败不会阻断另一个平台的队列与健康结果。
+- 缺失 capability 或 handler 不生成对应动作，也不创建无效的周期任务或 UI 入口。
+- `add_seed` 在平台原生账号/KOL 表中保存长期 `seed`，不创建固定版本 seed set。
+- 关系证据持久保存；候选在后续内容扫描满足阈值后仍可晋升。
+- X 的 following、verified follower、回复、引用和提及均形成带原生 ID/URL 的候选关系证据；小红书 seed/Active 笔记的评论作者形成平台原生关系证据。
+- X/小红书的受保护、已停用和高垃圾风险账号实际进入确定性晋升策略并被拒绝，不只是保留未接线的策略参数。
+- 高置信度评论只有在真实写入与自动执行两个开关、额度、冷却、去重、内容规则和通道健康均通过时才会自动排队。
+- 首次冷私信进入 `needs_review`；仅提交 `has_valid_conversation=true` 不能伪造已建立会话，历史成功出站私信也不会自动建立有效会话。后续私信必须同时匹配 `automation_conversations` 中平台、原生账号、原生会话 ID 和 `valid` 状态。
+- 人工批准动作不依赖自动策略开关；真实写入关闭时动作只停留在 `scheduled`，外部执行仍受写入开关和执行前二次安全校验约束。
+- 全局、平台、账号和动作类型四级 Kill Switch 均阻止新写入，不停止只读任务。
+- 不确定回执进入 `confirmation_required`，失败或不确定写入不会因更换草稿而对同一目标自动重试。
+- 进程中断后遗留的 `executing` 动作只会恢复为 `confirmation_required`。
+- Worker 启动时，超过 15 分钟的遗留 `running` 任务会变为 `failed`，不会自动重新入队；其他平台任务仍可继续。
+- 信号账号按原生 ID 稳定轮转，每账号内容游标独立、单调推进；乱序结果和旧内容不会让游标倒退，小红书旧笔记上的新评论仍可被扫描。
+- 小红书搜索结果缺少原生作者 ID 时保留笔记但标记作者未解析；本地哈希不能进入 Feed 扫描、自动晋升或 DM，旧数据库中的同类哈希会由平台 migration 纠正。
+- AI 缺失或失败时投影回退到离线路径；AI 输出不能绕过禁用词、链接、会话、额度、冷却、幂等、Kill Switch 或执行前复检。
+- `db rebuild --backup` 在初始化核心和各平台注册 schema 前保留可恢复备份；平台 schema 失败时恢复原库及 WAL sidecar。
+
+虚拟视频验收分布在三层：
+
+| 测试 | 证明内容 |
+|---|---|
+| `test_platform_kernel.py` | 显式注册、Channel/Video 原生模型、schema、能力、失败隔离、写入只调用一次 |
+| `test_platform_automation_adapter_contract.py` | 独立视频表、发现/信号投影、视频本地评分、KOL 状态与 `add_seed` |
+| `test_platform_automation_service.py` | 视频平台贯穿共享任务和机会生命周期，核心没有 X/小红书分支 |
+
+这组测试只证明平台扩展契约；它不表示真实 YouTube 或 Instagram API 已接入。
+
+## 2. 本地 CLI 验收
+
+在新的 shell 中使用临时数据库：
+
+```bash
+export KOL_DB_PATH="$(mktemp -d)/kol-search.db"
+export TWITTER_BACKEND=mock
+export KOL_ENABLE_MOCK_BACKEND=true
+export KOL_ENABLED_PLATFORMS=x,xiaohongshu
+export KOL_LIVE_WRITE_ENABLED=false
+export KOL_AUTO_EXECUTION_ENABLED=false
+
+kol-search platforms
+kol-search discover "RWA research" --platform x --limit 20
+kol-search scan --platform x
+```
+
+检查：
+
+1. `platforms` 只列出代码内显式注册且由 `KOL_ENABLED_PLATFORMS` 启用的平台，并显示读取连接状态和 Manifest 能力。
+2. `discover` 创建 `manual_discovery`，等待任务到达 `succeeded / failed / cancelled` 后退出并打印平台结果。
+3. `scan --platform x` 默认等同于 `--wait`：显示进度，成功时打印结果，失败或取消时以非零状态退出。
+4. 信号任务的 payload 包含平台扫描选项，结果保留平台游标和原生对象投影统计。
+5. 连续运行超过一批账号时，`target_cursor` 稳定轮转，单批不超过 `KOL_PLATFORM_ACCOUNT_BATCH_SIZE`；返回的内容 `cursor` 是按账号保存的高水位映射。
+
+再验证非等待模式：
+
+```bash
+kol-search scan --platform x --no-wait
+```
+
+该命令打印 `Queued ... signal job #...`，不轮询任务终态。它适合 Web 服务或其他常驻 Worker 正在消费同一数据库的场景；验收脚本若需要确定结果，应使用默认等待模式。
+
+未知平台，或缺少 `scan_signals` / `build_opportunities` 任一处理器时，应得到明确错误，而不是回退到 X。
+
+## 3. 平台中心、种子与 Router 验收
+
+```bash
 kol-search web
 ```
 
-- X、小红书每个授权账号使用独立 Browser Bridge profile。
-- 系统只保存 profile 别名，不保存密码或 Cookie。
-- 登记账号时，平台账号 ID、用户名必须与 `whoami` 一致；发送前会再次校验。
-- 本机访问可以不设置管理员密码；通过 VPN 访问必须配置 `KOL_ADMIN_PASSWORD` 和 `KOL_SESSION_SECRET`。
+打开以下页面：
 
-## 3. 场景一：搜索“加密货币/RWA”热门 KOL
+1. `/` 或 `/platforms` 是平台中心，只汇总数量、健康、任务和异常，不展示跨平台影响力总榜。
+2. `/platforms/x` 与 `/platforms/xiaohongshu` 各自展示 KOL、机会、动作、能力、连接、回执和异常。
+3. `/platforms/x/module` 与 `/platforms/xiaohongshu/module` 返回各平台 Router 提供的 Manifest JSON，证明 Router 由插件注册。
+4. X 与小红书分别选择 `platform_x_workspace.html`、`platform_xiaohongshu_workspace.html`；两者继承共享骨架，但可以由自己的 Router/模板独立扩展。
+5. `/settings/brand` 为注册表中的每个平台动态渲染一个账号字段，并保存到 `platform_handles` 映射；页面和存储层不得硬编码只有 X/小红书两个字段。
 
-### 操作
+在 X 工作台执行：
 
-1. 在首页选择“X + 小红书真实搜索”。
-2. 输入 `加密货币/RWA`，每平台目标数设为 `10`。
-3. 启动任务并等待完成。
+1. 在“KOL 库”填写 `@seed_handle` 和可选显示名称，点击“添加长期种子”。
+2. 页面应显示该平台原生账号，状态为 `seed`，评分不与其他平台合并。
+3. 在“手动主题发现”中分别检查 Manifest 允许的来源：X 可选择账号、内容和种子关系扩展；关系扩展允许关键词为空。
+4. 小红书当前只显示内容搜索，不显示账号搜索或关系扩展；仍可通过自己的种子表单添加原生用户 ID。
+5. 当前 X 与小红书都不声明 `media_upload`，因此两者均不显示媒体上传入口；小红书还不显示自有发布。未来平台未声明的能力同样隐藏。
 
-### 预期
-
-- 自动扩展中英文查询，包括 `RWA`、`real world assets`、`tokenization`、`现实世界资产`、`资产代币化`。
-- 每个平台先取最近 24 小时；不足时回退 7 天，再不足回退 30 天。
-- 无发布时间内容不会冒充近期结果，并计入告警。
-- X、小红书分别排名，每个平台目标 10 个；不足时任务仍完成并显示实际数量和原因。
-- 每个结果包含 `platform`、平台外部 ID、原始主页、来源、采集时间、评分分项和 1–3 条代表内容。
-- 相同用户名可以同时存在于两个平台；唯一身份为 `(platform, external_id)`。
-
-### 通过标准
-
-- 两个平台均返回真实结果，或页面明确标记未登录/真实结果不足。
-- Top 10 中至少 8 个候选的代表内容与 RWA 明确相关。
-- 重跑不会因账号改名或跨平台同名生成错误合并。
-- 导出中不包含 `source_provider=mock`。
-
-## 4. 场景二：点击 Trend
-
-### 操作
-
-1. 点击导航栏“趋势雷达”，首次进入触发真实刷新。
-2. 分别选择金融、科技、AI、加密/RWA，以及 X、小红书过滤条件。
-3. 点击某张趋势卡进入详情。
-4. 15 分钟内重复进入，再执行一次“强制刷新”。
-
-### 预期
-
-- 首次刷新读取 X 原生趋势与搜索内容、小红书 Feed 与搜索内容。
-- 方向默认为 `finance/technology/ai/crypto-rwa`，关键词来自 `trend_categories`，可扩展。
-- 每平台目标 20 条内容，使用 24h→7d→30d 回退；每条都有作者、时间、平台、原始链接及指标快照。
-- 详情按平台展示组成帖子，不跨平台直接比较原始互动数。
-- 15 分钟缓存内快速返回；强制刷新重新采集。
-- URL、平台 ID 和聚类指纹阻止重复主题/帖子。
-- 生命周期只使用 `emerging/rising/breakout/declining`。
-
-### 通过标准
-
-- Top 20 至少 90% 位于页面标记的实际回退窗口。
-- 缓存结果显示上次采集时间；平台失败不清空已有结果。
-- 每张趋势卡可追溯到详情中的组成帖子。
-
-## 5. 场景三：授权账号评论
-
-### 沙盒准备
-
-1. 为 X、小红书各准备一个项目方自有账号和一个自有测试目标帖子。
-2. 在“推广操作”登记账号，角色选择 `engagement`，绑定独立 browser profile。
-3. 保持 `KOL_LIVE_WRITE_ENABLED=false`，先完成草稿与审批测试。
-
-### 流程
-
-1. 从人物雷达选择回复机会，或在推广操作台输入精确目标链接。
-2. 创建草稿；评论必须回应原帖且默认不包含链接。
-3. 管理员核对平台、账号、目标和最终文案后逐条批准。
-4. 将 `KOL_LIVE_WRITE_ENABLED=true`，重启服务并执行一条已批准沙盒任务。
-5. X 使用精确单推文 reply；小红书使用可见浏览器定位评论框和发送按钮。
-6. 发送后回读页面/平台回执；无法确认时进入 `confirmation_required`，不得自动重试。
-
-### 强制验证
-
-- 未审批、真实写入开关关闭、Kill Switch 开启、账号暂停时均不能发送。
-- 默认每账号评论 `3/h、10/24h`；同一作者冷却 7 天。
-- 同一帖子只允许一个授权账号成功评论。
-- 评论链接、重复幂等键、拒绝联系目标、第三次连续账号失败均被阻止。
-- 验证码、限流、登录异常或平台警告立即停止，不实现任何绕过。
-
-## 6. 场景四：官方账号私信
-
-### 沙盒准备
-
-- X、小红书各准备一个角色为 `official_dm` 的官方测试账号和一个允许接收私信的自有目标账号。
-- 在品牌设置中填写品牌名称、两个平台账号和产品 URL。
-- 产品域名必须同时存在于 `KOL_APPROVED_PRODUCT_DOMAINS`。
-
-### 流程
-
-1. 从高分 KOL 榜单点击“创建官方私信草稿”，系统带入平台 ID、主页和个性化首次触达文案。
-2. 首次私信说明官方身份、联系原因、产品链接和拒绝继续联系的方法。
-3. 每条首次私信及后续回复都必须逐条批准。
-4. 执行时浏览器必须定位到精确目标主页/会话；不使用 OpenCLI 的批量 `reply-dm`。
-5. 平台不允许发起会话时记录 `target_not_messageable`，不得换号绕过。
-
-### 强制验证
-
-- 只有 `official_dm` 账号可以创建私信任务。
-- 默认每账号私信 `2/h、5/24h`。
-- 未标记有效会话的目标只能进行一次首次触达。
-- 非白名单产品链接被拒绝。
-- 退订、拒绝或投诉加入 `do_not_contact`，之后所有账号都不能再联系该平台目标。
-- 发送与后续回复保存会话、消息、审批、平台回执和审计记录。
-
-## 7. Kill Switch 与回执状态
-
-状态机固定为：
-
-```text
-draft -> approved -> sending -> sent
-                         |----> confirmation_required
-                         |----> failed
-                         |----> target_not_messageable
-draft/approved/failed -> cancelled
-```
-
-`sending` 之后的未知结果永不自动重试。Kill Switch 只阻止新执行，不删除草稿、回执或审计记录。
-
-## 8. Postiz 边界
-
-项目内的 `PostizPublisher` 和“主动发布”页面只用于 X 自有账号的主动内容：
-
-- 不参与 KOL/Trend 发现；
-- 不用于第三方帖子评论；
-- 不用于私信；
-- 当前明确拒绝 `platform=xiaohongshu`。
-
-### 环境与账号同步
+可用以下只读查询确认种子写入平台原生表：
 
 ```bash
-POSTIZ_API_URL=https://api.postiz.com/public/v1
-POSTIZ_API_KEY=<仅写入本地 .env>
-POSTIZ_INTEGRATION_CACHE_MINUTES=15
-KOL_PUBLISHING_MEDIA_DIR=data/publishing_media
+sqlite3 "$KOL_DB_PATH" \
+  "SELECT a.id, a.handle, k.status FROM x_accounts a JOIN x_kols k ON k.account_id=a.id;"
+
+sqlite3 "$KOL_DB_PATH" \
+  "SELECT u.id, u.nickname, k.status FROM xhs_users u JOIN xhs_kols k ON k.user_id=u.id;"
 ```
 
-1. 在 Postiz Cloud 连接至少一个自有 X 账号。
-2. 打开“主动发布”，点击“手动同步账号”。
-3. 确认页面只列出 `identifier=x` 且未禁用的账号，并显示 handle、integration ID 和实际默认账号。
-4. API Key 只允许来自环境变量；数据库、页面、审计事件和截图不得出现 Key。
+手动发现和扫描生成的共享任务必须带自己的 `platform_id`；平台工作台中的机会必须能追溯到原生对象类型、ID、URL或证据以及平台内评分原因。
 
-### 草稿、审批与发布
+## 4. 显式 schema 与数据库重建验收
 
-1. 从 Trend 卡片点击“创建 X 帖子”，确认 Trend ID 和可编辑草稿已复制；再从“主动发布”独立创建一条草稿。
-2. 创建两段线程，每段分别验证文字、本地图片或公开 HTTPS 图片 URL。PDF、私网/localhost URL、非 HTTPS URL、不支持的 MIME 和单张超过 10MB 必须在上传前被拒绝。
-3. 选择实际 X integration、`now` 或 `schedule`、回复权限以及每帖 `Made with AI` 标记。排期输入统一为北京时间，记录中同时显示 UTC。
-4. 保存后确认状态为 `draft`，Postiz 尚无媒体上传和创建请求；点击“逐条审批”后状态为 `approved`；再次明确点击“提交 Postiz”才允许写入。
-5. 单帖、图片帖和线程分别检查 Postiz payload：`__type=x`、`who_can_reply_post`、`community=""`、`paid_partnership=false`、管理员选择的 `made_with_ai`，线程段按 `value` 顺序排列。
-6. `now` 发布后保存 Postiz `postId`，通过 `GET /posts` 回读 `releaseURL` 并标记 `published`；来自 Trend 的帖子同时回写 `published_url`。
-7. `schedule` 发布后验证 `scheduled -> paused -> scheduled`，最后按需删除并进入 `cancelled`；每个操作都必须有独立审计事件。
+先创建一个可识别的旧库，再重建：
 
-### 不确定结果与真实验收证据
+```bash
+export KOL_DB_PATH="$(mktemp -d)/rebuild.db"
+sqlite3 "$KOL_DB_PATH" "CREATE TABLE before_rebuild(marker TEXT);"
+kol-search db rebuild --backup
+```
 
-- 创建请求超时、网络中断或 5xx 时进入 `confirmation_required`；按日期、integration 和首段内容查询 Postiz，禁止直接重试。
-- 401/403、429、明确 4xx、媒体上传失败和失效 integration 进入 `failed`，编辑并重新审批前不得提交。
-- 真实验收必须记录：北京时间与 UTC、管理员、integration ID/handle、本地记录 ID、Postiz `postId`、X `releaseURL`、X 回读正文、审计事件和截图。
-- 真实测试只发布一条用户批准的测试内容。是否删除真实 X 帖子由用户决定；系统不会自动清理已发布内容。
+命令应打印新库路径和时间戳备份路径。立即检查新库：
 
-Postiz 官方的平台/API 清单未列出小红书；其 MCP 也没有评论读取/回复工具。参考：
+```bash
+sqlite3 "$KOL_DB_PATH" ".tables"
+```
 
-- <https://docs.postiz.com/public-api/posts/create>
-- <https://docs.postiz.com/public-api/integrations/list>
-- <https://docs.postiz.com/public-api/uploads/upload-file>
-- <https://docs.postiz.com/mcp/introduction>
+新 schema 至少包含：
 
-## 9. 官方或持牌数据商接入指南
+- `automation_schema_migrations`
+- `automation_platform_connections`
+- `automation_jobs`
+- `automation_opportunities`
+- `automation_actions`
+- `automation_policy_decisions`
+- `automation_channel_controls`
+- `automation_audit_events`
+- `automation_brand_config`
+- `automation_account_quotas`
+- `automation_conversations`
+- `x_schema_migrations`、`x_accounts`、`x_kols`、`x_tweets`、`x_tweet_metrics`、`x_discovery_evidence`、`x_trends`
+- `xhs_schema_migrations`、`xhs_users`、`xhs_kols`、`xhs_notes`、`xhs_note_metrics`、`xhs_comments`、`xhs_discovery_evidence`、`xhs_trends`
 
-长期替换 Reader 时必须完成以下步骤：
+检查备份仍含 `before_rebuild`，并可由 SQLite 打开。失败注入测试应证明任何平台注册 schema 抛错时：
 
-1. 确认合同允许的地区、账号/内容字段、存储期限、再分发和营销用途。
-2. 完成 DPA、数据删除、审计、子处理方、SLA、限流及事故通知审查。
-3. 让供应商实现相同 `PlatformReader` 契约，不让业务层依赖供应商私有字段。
-4. 映射 `(platform, external_id)`、原始链接、发布时间、互动指标和采集时间；缺失字段必须显式为空。
-5. 在供应商沙盒完成空结果、分页、限流、过期凭证和数据删除测试。
-6. 与浏览器 Reader 双读至少一个验收周期，对比覆盖率、时效、重复率和字段偏差。
-7. 先按平台/查询灰度切流；保留 feature flag 和回滚，不覆盖已有原始回执。
+- 原数据库与其 `-wal` / `-shm` sidecar 被恢复。
+- 失败的新数据库及 sidecar 以 `.failed-<timestamp>` 单独保留。
+- 已成功安装的平台不会掩盖后续平台的 schema 错误。
 
-小红书公开资料当前主要覆盖电商开放接口与内容分享 SDK，不能据此假设具有公开搜索、第三方评论或私信权限：
+## 5. 策略边界验收
 
-- <https://school.xiaohongshu.com/en/open/index.html>
-- <https://agora.xiaohongshu.com/doc>
+先保持真实写入关闭，创建托管账号、机会和动作，验证：
 
-## 10. 本轮结果记录
+| 场景 | 预期结果 |
+|---|---|
+| 评论分数 79 | `needs_review` |
+| 评论分数 80，含链接 | `rejected` |
+| 评论分数 80，命中禁用词 | `rejected` |
+| 首次冷私信分数 100 | `needs_review` |
+| 仅由请求声称存在有效会话 | 仍为冷私信，`needs_review` |
+| 私信含非批准域名 | `rejected` |
+| `automation_conversations` 中存在账号绑定、证据和 `valid` 状态的后续私信分数 80 | 真实写入与自动执行两个开关开启时可 `scheduled` |
+| 只有历史成功出站私信，没有已验证会话记录 | 仍为冷私信，`needs_review` |
+| 达到小时/每日额度 | `rejected` |
+| 同一评论/发布目标已有动作 | 不创建第二个自动写入 |
+| 同一目标前次写入失败或未确认，草稿发生变化 | 仍不自动重试 |
+| 作者仍在冷却期 | `rejected` |
+| 机会已过期 | 执行前拒绝，不调用平台 |
+| 任一级 Kill Switch 暂停 | 不 claim 动作 |
 
-| 项目 | 状态 | 时间 | 证据/说明 |
-|---|---|---|---|
-| 单元与 Web 回归测试 | 通过 | 2026-07-20 23:55 CST | `61 passed`；覆盖平台映射、迁移、窗口回退、审批、幂等、配额、Kill Switch、Postiz payload、媒体延迟上传、排期状态机和 Web 路由 |
-| Postiz X 主动发布 UI | 通过（无真实写入） | 2026-07-20 23:55 CST | 本地浏览器验证“主动发布”导航、Key 缺失提示、账号空态、线程段动态增删/重排和北京时间排期必填；页面无自身前端错误 |
-| Postiz X 真实发布 | 通过 | 2026-07-21 00:26 CST | 本地记录 `owned_post #1` 使用默认 integration `@coffe_cat__`（ID `cmrtfjo0b05z4qj0yiv5eoogf`）发布英文 Loop agent harness 文案和 imagegen 配图；首版被 Postiz 明确以 400/超长拒绝，编辑并重新审批后成功，Postiz ID `cmrtfsut1061bqj0yosd8f7l3`，X 回执 <https://x.com/coffe_cat__/status/2079241589977997630>。OpenCLI 回读确认作者、完整正文、`has_media=true` 和真实 X 图片 URL一致；本地图片 `data/publishing_media/loop-agent-harness-20260721.png` |
-| X RWA KOL | 通过 | 2026-07-20 00:37–00:40 CST | 最终真实 Run `#16`；账号别名 `ddd` / 登录账号 `coffe_cat__`；150 条原始内容中有 77 条相关内容位于 24 小时窗口，返回 10/10 KOL；截图 `output/validation/run-16-kol.png` |
-| 小红书 RWA KOL | 通过（使用回退窗口） | 2026-07-20 00:37–00:40 CST | 同一 Run `#16`；账号别名 `ddd` / 登录账号 `punk`；108 条原始内容，按相关性过滤后在 30 天窗口取得 20 条内容，返回 10/10 KOL；未补 Mock 或无关候选 |
-| 双平台 Trend | 通过 | 2026-07-20 00:32 CST | 真实采集生成 cluster `19,20,21,22,23,24,17,26`；页面按四方向和两平台显示 8 簇。X 各方向 20 条/24 小时；小红书 AI 20、金融 12、加密/RWA 1、科技 3，均回退至 30 天；截图 `output/validation/trend-20260719.png` |
-| Trend 非阻塞与缓存 | 通过 | 2026-07-20 00:24–00:32 CST | 强制刷新请求约 1.4 秒返回并显示“刷新任务已排队”；后台完成后采集时间更新；普通请求只显示最近一次刷新的 8 个簇 |
-| X 沙盒评论 | 通过 | 2026-07-20 00:49 CST | 用户确认自有目标 `@punk2sang`；Action `#1` 由授权账号 `@coffe_cat__` 精确回复推文 `2078532652957921605`，回执为 <https://x.com/coffe_cat__/status/2078884960824647768>；Thread 回读确认作者、全文及 `in_reply_to` 一致 |
-| 小红书沙盒评论 | 未实发（安全阻断） | 2026-07-20 | 未提供双方自有沙盒笔记，且真实写入开关关闭；可见浏览器执行器已实现 |
-| X 沙盒私信 | `target_not_messageable` | 2026-07-20 01:02 CST | 用户完成 X Chat Passcode 初始化后，Action `#2` 精确进入 `@punk2sang` 会话；平台明确提示仅认证账号可向未关注自己的用户发送私信请求。`@coffe_cat__` 未认证且目标未关注发送方，因此消息未填写、未发送；未升级 Premium、换号或绕过限制 |
-| 小红书沙盒私信 | 未实发（安全阻断） | 2026-07-20 | 未提供允许接收的自有沙盒目标；精确目标/会话执行器、审批和回执模型已实现 |
-| 推广操作台 | 通过 | 2026-07-20 00:34 CST | 内置浏览器确认账号注册、评论/私信草稿、审批、执行、DNC 与全局开关表单可见；页面明确提示真实写入关闭；截图 `output/validation/operations-live-write-off.png` |
-| Kill Switch | 通过（自动化） | 2026-07-20 00:34 CST | 单元与 Web 测试确认开启后阻止执行并记录控制状态；由于没有沙盒 action，未伪造平台实发回执 |
+安全规则在动作规划时和外部写入紧前各执行一次。人工修改最终文案后，第二次校验必须使用修改后的文本。平台建议动作的 payload 应保存在 `automation_actions.payload_json`，执行时以 `platform_payload` 交回原平台。
 
-真实写入只允许面向双方自有沙盒目标。完成验证后应恢复 `KOL_LIVE_WRITE_ENABLED=false`。
+## 6. 写入与回执验收
+
+### X Postiz 发布
+
+Postiz 只用于 Manifest 声明发布桥接的 X 纯文本自有内容。先在 X 工作台登记 core-native Postiz integration 连接。当前 X 不声明 `media_upload`，验收不得出现文件上传控件或媒体上传请求。默认每日最多 2 条；在 `KOL_PUBLISH_WINDOWS` 之外执行动作时，X 模块应排到下一窗口，而不是立即发布。
+
+真实沙盒验证前必须满足：
+
+```bash
+KOL_LIVE_WRITE_ENABLED=true
+KOL_AUTO_EXECUTION_ENABLED=true
+POSTIZ_API_KEY=<local-only>
+```
+
+验证记录需包含本地 action ID、integration ID、排期 UTC、Postiz external ID、回执 URL 和审计事件。新链路不得创建已移除的 `owned_posts` 记录；策略或额度拒绝时不应先调用 Postiz。请求超时、5xx 或缺少可确认 ID 时只允许结果回收，不允许再次创建。结果回收优先使用 external ID；无 external ID 时，只有 integration ID、完整内容、动作时间前后 15 分钟都匹配且候选唯一才可确认。历史同文案、缺少 provider 时间戳或同窗口存在多条候选时必须保持 `confirmation_required`。`tests/test_platform_postiz_service.py` 还应证明完整计划、单次写入和回执回收不会创建已移除的业务 schema。
+
+### 浏览器评论与私信
+
+浏览器评论/私信验收必须证明不可逆发送按钮最多点击一次。点击调用超时或报错后不得尝试备用发送 selector；这类结果进入 `confirmation_required`。私信/评论 DOM 回读只有在平台定义的精确消息/评论元素相对发送前快照新增最终文本、且编辑器已清空该文本时才算确认；正文、旧同文消息或仍停留在编辑器里的草稿都不算回执。浏览器链路未取得平台原生 ID 时必须保持 `external_id` 为空，不能用本地摘要冒充平台回执。
+
+## 7. 失败隔离与渐进平台验收
+
+构造两个测试插件：一个健康检查或 `scan_signals` 抛错，另一个正常返回。确认：
+
+- 两个平台都通过同一个显式 Registry 注册。
+- 失败任务只把对应平台读取连接标记为 `degraded`；部分成功任务保留 warning 并同样把该读取连接标为 `degraded`，首页显示告警。
+- Worker 下一轮仍能 claim 并完成另一平台任务。
+- 只读平台没有写能力时，调度器不创建 `dispatch_actions`，工作台也不出现评论、私信或发布按钮。
+- 只有 `discover` 的早期平台不会被安排信号、动作或结果回收任务；只有 `scan_signals` 而没有 `build_opportunities` 的平台也不会被安排信号任务。
+- 后续加入 `scan_signals` 或写能力时不需要修改核心状态机或任务分发。
+
+## 8. 真实连接验收原则
+
+- 运行时禁止启用 Mock 作为真实证据。
+- 每个平台使用独立凭据或 Browser Bridge profile，只保存别名，不保存密码/Cookie。
+- 每项证据记录平台、原生对象 URL、采集/执行时间、任务或动作 ID、回执和截图。
+- 平台登录异常、验证码、限流或警告不得绕过；暂停该账号通道后，其他平台和只读任务继续。
+- 任何真实写入只面向双方自有沙盒目标，并在测试结束后恢复 `KOL_LIVE_WRITE_ENABLED=false`。
+
+## 9. 已移除旧流程的验收
+
+- `/tasks`、`/runs`、`/library`、`/contacts`、`/radar/*`、`/publishing` 和 `/operations` 不再注册，访问应返回 `404`。
+- 联系人网页爬取、联系人审核/导出、固定 seed build/expand、旧 Pipeline、旧 Worker、直发回复和 `OutboundService` 已从运行代码删除。
+- `db rebuild --backup`、正常 Web 启动以及新 CLI 都只初始化共享自动化表和已注册平台 schema，不会创建 `runs / contacts / seed_sets / owned_posts`。
+- X、小红书各自注册 Router、原生 schema 和工作台模板；平台模板继承同一基础骨架，以保留一致的共享交互。
+- `build_opportunities` 属于平台处理器契约，但不是第六种核心任务；核心 `signal_refresh` 明确执行 `scan_signals` → `build_opportunities`，内置构建处理器再调用 Adapter 投影。
+- 当前 X/小红书 Adapter 用平台 Repository 的 `unit_of_work` 保证一次原生投影内共同提交/回滚；平台原生表与共享 `automation_*` 表之间仍没有跨 Repository 的全局事务。

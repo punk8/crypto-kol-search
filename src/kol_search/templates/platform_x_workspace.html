@@ -1,0 +1,109 @@
+{# X owns this entry template; the shared base keeps common workspace UX aligned. #}
+{% extends "platform_workspace.html" %}
+{% block head_extra %}<meta http-equiv="refresh" content="300">{% endblock %}
+{% block opportunity_feed %}
+<section class="platform-panel x-feed-panel" id="inbox" aria-labelledby="x-feed-title">
+  <div class="platform-panel-head">
+    <div><p class="eyebrow">LIVE CONTENT</p><h2 id="x-feed-title">内容动态</h2><p>展示近期 Trend 下的具体推文与管理中 KOL 的最新推文；向下滚动加载更多。</p></div>
+    <span>{% if native_workspace.refreshed_at %}更新于 {{ native_workspace.refreshed_at[:16]|replace('T', ' ') }} UTC{% else %}等待首次采集{% endif %}</span>
+  </div>
+  <div class="x-feed-tabs">
+    <input type="radio" name="x-feed-tab" id="x-feed-trends" checked>
+    <label for="x-feed-trends">近期 Trend 推文</label>
+    <input type="radio" name="x-feed-tab" id="x-feed-kol-tweets">
+    <label for="x-feed-kol-tweets">KOL 最新推文</label>
+    <div class="x-feed-tab-panels">
+      <div class="x-feed-tab-panel x-feed-tab-panel--trends" data-x-feed="trends" data-offset="{{ native_workspace.recent_trend_tweets|length }}" data-has-more="{{ 'true' if native_workspace.recent_trend_tweets|length == 20 else 'false' }}">
+        <div class="x-feed-items">
+        {% for item in native_workspace.recent_trend_tweets %}
+        <article class="x-feed-row x-feed-tweet">
+          <span class="platform-avatar" aria-hidden="true">{{ (item.author_handle or 'X')[:2]|upper }}</span>
+          <div><strong><span class="x-trend-tag">#{{ item.trend_rank or '—' }} {{ item.trend_name }}</span> @{{ item.author_handle or item.author_id }}{% if item.display_name %} · {{ item.display_name }}{% endif %}</strong><p>{{ item.text }}</p><small>{{ item.created_at[:16]|replace('T', ' ') if item.created_at else '时间未知' }} UTC · {{ item.like_count }} 赞 · {{ item.repost_count }} 转发 · {{ item.reply_count }} 回复</small></div>
+          {% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">查看推文</a>{% endif %}
+        </article>
+        {% else %}<div class="platform-panel-empty"><strong>正在等待 Trend 推文</strong><p>后台会展开近期 Trend，并采集对应的具体推文。</p></div>{% endfor %}
+        </div>
+        <div class="x-feed-load-state" {% if native_workspace.recent_trend_tweets|length < 20 %}hidden{% endif %}>向下滚动加载更多</div>
+      </div>
+      <div class="x-feed-tab-panel x-feed-tab-panel--tweets" data-x-feed="kols" data-offset="{{ native_workspace.managed_kol_tweets|length }}" data-has-more="{{ 'true' if native_workspace.managed_kol_tweets|length == 20 else 'false' }}">
+        <div class="x-feed-items">
+        {% for item in native_workspace.managed_kol_tweets %}
+        <article class="x-feed-row x-feed-tweet">
+          <span class="platform-avatar" aria-hidden="true">{{ (item.author_handle or 'X')[:2]|upper }}</span>
+          <div><strong>@{{ item.author_handle }}{% if item.display_name %} · {{ item.display_name }}{% endif %}</strong><p>{{ item.text }}</p><small>{{ item.created_at[:16]|replace('T', ' ') if item.created_at else '时间未知' }} UTC · {{ item.kol_status }} · KOL {{ "%.2f"|format(item.kol_score) }} · {{ item.like_count }} 赞 · {{ item.repost_count }} 转发 · {{ item.reply_count }} 回复</small></div>
+          {% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">查看推文</a>{% endif %}
+        </article>
+        {% else %}<div class="platform-panel-empty"><strong>暂时没有 KOL 推文</strong><p>后台会持续采集管理中 KOL 的最新内容。</p></div>{% endfor %}
+        </div>
+        <div class="x-feed-load-state" {% if native_workspace.managed_kol_tweets|length < 20 %}hidden{% endif %}>向下滚动加载更多</div>
+      </div>
+    </div>
+  </div>
+</section>
+<script>
+(() => {
+  const formatTime = value => value ? `${String(value).slice(0, 16).replace('T', ' ')} UTC` : '时间未知';
+  const addText = (parent, tag, value, className) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = value;
+    parent.appendChild(node);
+    return node;
+  };
+  const appendTweet = (list, item, isTrend) => {
+    const row = document.createElement('article');
+    row.className = 'x-feed-row x-feed-tweet';
+    addText(row, 'span', String(item.author_handle || 'X').slice(0, 2).toUpperCase(), 'platform-avatar');
+    const body = document.createElement('div');
+    const heading = document.createElement('strong');
+    if (isTrend) {
+      addText(heading, 'span', `#${item.trend_rank || '—'} ${item.trend_name || 'Trend'}`, 'x-trend-tag');
+      heading.appendChild(document.createTextNode(' '));
+    }
+    heading.appendChild(document.createTextNode(`@${item.author_handle || item.author_id || 'unknown'}${item.display_name ? ` · ${item.display_name}` : ''}`));
+    body.appendChild(heading);
+    addText(body, 'p', item.text || '');
+    const metrics = `${formatTime(item.created_at)}${isTrend ? '' : ` · ${item.kol_status || ''} · KOL ${Number(item.kol_score || 0).toFixed(2)}`} · ${item.like_count || 0} 赞 · ${item.repost_count || 0} 转发 · ${item.reply_count || 0} 回复`;
+    addText(body, 'small', metrics);
+    row.appendChild(body);
+    if (item.url && /^https?:\/\//i.test(item.url)) {
+      const link = addText(row, 'a', '查看推文');
+      link.href = item.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+    }
+    list.appendChild(row);
+  };
+  document.querySelectorAll('[data-x-feed]').forEach(panel => {
+    let loading = false;
+    const loadState = panel.querySelector('.x-feed-load-state');
+    const loadMore = async () => {
+      if (loading || panel.dataset.hasMore !== 'true') return;
+      loading = true;
+      loadState.hidden = false;
+      loadState.textContent = '正在加载…';
+      try {
+        const offset = Number(panel.dataset.offset || 0);
+        const response = await fetch(`/platforms/x/feed/${panel.dataset.xFeed}?offset=${offset}&limit=20`, {headers: {'Accept': 'application/json'}});
+        if (!response.ok) throw new Error('load failed');
+        const page = await response.json();
+        const list = panel.querySelector('.x-feed-items');
+        if (page.items.length) list.querySelector('.platform-panel-empty')?.remove();
+        page.items.forEach(item => appendTweet(list, item, panel.dataset.xFeed === 'trends'));
+        panel.dataset.offset = String(page.next_offset);
+        panel.dataset.hasMore = String(page.has_more);
+        loadState.textContent = page.has_more ? '向下滚动加载更多' : '已经到底了';
+        loadState.hidden = !page.has_more && page.items.length === 0;
+      } catch (_error) {
+        loadState.textContent = '加载失败，继续滚动可重试';
+      } finally {
+        loading = false;
+      }
+    };
+    panel.addEventListener('scroll', () => {
+      if (panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 120) loadMore();
+    }, {passive: true});
+  });
+})();
+</script>
+{% endblock %}

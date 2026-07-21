@@ -6,26 +6,25 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from kol_search.postiz import PostizError, PostizPublisher, PostizRequestUncertain
+from kol_search.platform_modules.x_postiz import (
+    XPostizPublisher,
+    XPostizRequestUncertain,
+)
 
 
-def test_postiz_is_owned_x_publish_only_and_rejects_xiaohongshu():
+def test_x_postiz_creates_owned_post():
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(200, json=[{"postId": "p1", "integration": "x1"}])
 
-    publisher = PostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
-    result = publisher.create_owned_post(
-        integration_id="x1", platform="x", content="Owned content", mode="draft"
+    publisher = XPostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
+    result = publisher.create_x_post(
+        integration_id="x1", content="Owned content", mode="draft"
     )
     assert result[0]["postId"] == "p1"
     assert requests[0].url.path.endswith("/public/v1/posts")
-    with pytest.raises(PostizError, match="不支持小红书"):
-        publisher.create_owned_post(
-            integration_id="xhs1", platform="xiaohongshu", content="No", mode="draft"
-        )
     publisher.close()
 
 
@@ -36,10 +35,9 @@ def test_postiz_thread_schedule_payload_and_x_defaults():
         requests.append(request)
         return httpx.Response(200, json=[{"postId": "thread-1"}])
 
-    publisher = PostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
-    publisher.create_owned_post(
+    publisher = XPostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
+    publisher.create_x_post(
         integration_id="x-account",
-        platform="x",
         items=[
             {"content": "First", "image": [{"id": "asset-1", "path": "/a.png"}]},
             {"content": "Second", "image": []},
@@ -63,27 +61,23 @@ def test_postiz_thread_schedule_payload_and_x_defaults():
     publisher.close()
 
 
-def test_postiz_integrations_upload_lifecycle_and_analytics():
+def test_x_postiz_lists_integrations_and_post_receipts():
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if request.url.path.endswith("/integrations"):
             return httpx.Response(200, json={"integrations": [{"id": "x1", "identifier": "x"}]})
-        if request.url.path.endswith("/upload") or request.url.path.endswith("/upload-from-url"):
-            return httpx.Response(200, json={"id": "asset", "path": "/asset.png"})
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json={"posts": [{"postId": "p1"}]})
 
-    publisher = PostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
+    publisher = XPostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
     assert publisher.list_integrations()[0]["id"] == "x1"
-    assert publisher.upload_file(
-        filename="image.png", content=b"png", content_type="image/png"
-    )["id"] == "asset"
-    assert publisher.upload_from_url("https://example.com/image.png")["path"] == "/asset.png"
-    publisher.change_post_status("p1", "draft")
-    publisher.delete_post("p1")
-    publisher.post_analytics("p1")
-    assert [request.method for request in requests] == ["GET", "POST", "POST", "PUT", "DELETE", "GET"]
+    around = datetime(2026, 7, 20, 10, 30, tzinfo=timezone.utc)
+    assert publisher.recent_posts(around=around, hours=12)[0]["postId"] == "p1"
+    assert [request.method for request in requests] == ["GET", "GET"]
+    query = requests[1].url.params
+    assert query["startDate"] == "2026-07-19T22:30:00+00:00"
+    assert query["endDate"] == "2026-07-20T22:30:00+00:00"
     publisher.close()
 
 
@@ -91,9 +85,9 @@ def test_postiz_create_timeout_is_uncertain_and_not_a_regular_failure():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timed out", request=request)
 
-    publisher = PostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
-    with pytest.raises(PostizRequestUncertain, match="未返回明确结果"):
-        publisher.create_owned_post(
-            integration_id="x1", platform="x", content="Do not retry", mode="now"
+    publisher = XPostizPublisher(api_key="secret", transport=httpx.MockTransport(handler))
+    with pytest.raises(XPostizRequestUncertain, match="未返回明确结果"):
+        publisher.create_x_post(
+            integration_id="x1", content="Do not retry", mode="now"
         )
     publisher.close()
