@@ -20,6 +20,7 @@ def isolated_platform_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 
     database_path = tmp_path / "platform-integration.db"
     monkeypatch.setenv("KOL_DB_PATH", str(database_path))
+    monkeypatch.setenv("KOL_DATABASE_URL_KEYCHAIN_SERVICE", "")
     monkeypatch.setenv("KOL_ENABLED_PLATFORMS", "x,xiaohongshu")
     monkeypatch.setenv("TWITTER_BACKEND", "mock")
     monkeypatch.setenv("KOL_ENABLE_MOCK_BACKEND", "true")

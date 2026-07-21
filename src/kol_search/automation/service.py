@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import socket
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -102,25 +103,7 @@ class PlatformAutomationService:
     def initialize_connections(self) -> None:
         """Initialize shared brand defaults and registered read connections."""
 
-        if self.settings.global_kill_switch:
-            self.automation.set_kill_switch(
-                "global",
-                True,
-                reason="KOL_GLOBAL_KILL_SWITCH is enabled",
-                updated_by="configuration",
-            )
-        if self.automation.get_brand_config().get("updated_at") is None:
-            self.automation.save_brand_config(
-                brand_name="",
-                description="",
-                audience="",
-                tone="professional, concise, conversational",
-                product_url="",
-                platform_handles={},
-                allowed_claims=[],
-                forbidden_terms=[],
-                approved_domains=self.settings.product_domain_allowlist(),
-            )
+        self.initialize_defaults()
 
         health_by_platform = {
             result.platform_id: result for result in self.registry.health()
@@ -149,6 +132,30 @@ class PlatformAutomationService:
                 ],
                 metadata={"kind": "reader", "detail": detail or ""},
             )
+
+    def initialize_defaults(self) -> None:
+        """Initialize deterministic database defaults without platform I/O."""
+
+        if self.settings.global_kill_switch:
+            self.automation.set_kill_switch(
+                "global",
+                True,
+                reason="KOL_GLOBAL_KILL_SWITCH is enabled",
+                updated_by="configuration",
+            )
+        if self.automation.get_brand_config().get("updated_at") is None:
+            self.automation.save_brand_config(
+                brand_name="",
+                description="",
+                audience="",
+                tone="professional, concise, conversational",
+                product_url="",
+                platform_handles={},
+                allowed_claims=[],
+                forbidden_terms=[],
+                approved_domains=self.settings.product_domain_allowlist(),
+            )
+
 
     def refresh_health(self) -> list[dict[str, Any]]:
         self.initialize_connections()
@@ -1383,6 +1390,8 @@ class AutomationWorker:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
+        self._started_at: str | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -1393,16 +1402,27 @@ class AutomationWorker:
             before=stale_before
         )
         self._stop.clear()
+        self._started_at = _now().isoformat()
+        self._heartbeat("online")
         self._thread = threading.Thread(
             target=self._loop, name="platform-automation-worker", daemon=True
         )
         self._thread.start()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="platform-worker-heartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
         if self._thread:
             self._thread.join(timeout=5)
+        if self._heartbeat_thread:
+            self._heartbeat_thread.join(timeout=5)
+        self._heartbeat("offline")
 
     def notify(self) -> None:
         self._wake.set()
@@ -1426,6 +1446,22 @@ class AutomationWorker:
             if not worked:
                 self._wake.wait(1)
                 self._wake.clear()
+
+    def _heartbeat_loop(self) -> None:
+        while not self._stop.wait(30):
+            try:
+                self._heartbeat("online")
+            except Exception:
+                logger.exception("worker heartbeat failed")
+
+    def _heartbeat(self, status: str) -> None:
+        self.automation.record_worker_heartbeat(
+            self.service.settings.worker_id,
+            host_label=socket.gethostname(),
+            version="1.0.0",
+            status=status,
+            started_at=self._started_at,
+        )
 
 
 class PlatformAutomationScheduler:

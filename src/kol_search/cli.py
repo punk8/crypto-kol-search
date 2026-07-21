@@ -3,7 +3,11 @@ from __future__ import annotations
 import typer
 
 from kol_search.automation import AutomationStore
-from kol_search.automation.service import AutomationWorker, PlatformAutomationService
+from kol_search.automation.service import (
+    AutomationWorker,
+    PlatformAutomationScheduler,
+    PlatformAutomationService,
+)
 from kol_search.database_rebuild import rebuild_database
 from kol_search.platforms import build_default_registry, install_registered_platform_schemas
 from kol_search.settings import get_settings
@@ -14,12 +18,18 @@ db_app = typer.Typer(help="Database maintenance commands")
 app.add_typer(db_app, name="db")
 
 
-def _platform_runtime(settings):  # noqa: ANN001, ANN202
-    automation = AutomationStore(settings.db_path())
+def _platform_runtime(  # noqa: ANN001, ANN202
+    settings, *, initialize_health: bool = True
+):
+    database_target = settings.database_target()
+    automation = AutomationStore(database_target)
     registry = build_default_registry(settings)
-    install_registered_platform_schemas(settings.db_path(), registry)
+    install_registered_platform_schemas(database_target, registry)
     service = PlatformAutomationService(automation, registry, settings)
-    service.initialize_connections()
+    if initialize_health:
+        service.initialize_connections()
+    else:
+        service.initialize_defaults()
     worker = AutomationWorker(automation, service)
     return automation, registry, service, worker
 
@@ -121,6 +131,34 @@ def list_platforms() -> None:
                 f"{manifest.platform_id}\t{reader.get('status', 'disconnected')}\t{capabilities}"
             )
     finally:
+        registry.close()
+
+
+@app.command("worker")
+def run_worker() -> None:
+    """Run the persistent platform scheduler and Mac execution worker."""
+
+    import threading
+
+    settings = get_settings()
+    automation, registry, service, worker = _platform_runtime(
+        settings, initialize_health=False
+    )
+    scheduler = PlatformAutomationScheduler(service, worker, settings)
+    stopped = threading.Event()
+    try:
+        worker.start()
+        scheduler.start()
+        typer.echo(f"Worker {settings.worker_id} is running; checking platform health")
+        service.initialize_connections()
+        typer.echo("Platform health check complete")
+        while not stopped.wait(30):
+            pass
+    except KeyboardInterrupt:
+        typer.echo("Stopping worker")
+    finally:
+        scheduler.stop()
+        worker.stop()
         registry.close()
 
 

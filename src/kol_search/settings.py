@@ -9,6 +9,7 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BackendName = Literal["mock", "official", "third_party", "twitterapi_io", "twscrape", "opencli"]
+RuntimeMode = Literal["combined", "web", "worker"]
 
 # Project root: search/
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -126,12 +127,50 @@ class Settings(BaseSettings):
     )
 
     kol_db_path: str = Field(default="data/kol_search.db", alias="KOL_DB_PATH")
+    database_url: str | None = Field(default=None, alias="KOL_DATABASE_URL")
+    database_keychain_service: str | None = Field(
+        default=None, alias="KOL_DATABASE_URL_KEYCHAIN_SERVICE"
+    )
+    runtime_mode: RuntimeMode = Field(default="combined", alias="KOL_RUNTIME_MODE")
+    web_read_only: bool = Field(default=False, alias="KOL_WEB_READ_ONLY")
+    worker_id: str = Field(default="mac-worker", alias="KOL_WORKER_ID")
 
     def db_path(self) -> Path:
         p = Path(self.kol_db_path)
         if not p.is_absolute():
             p = PROJECT_ROOT / p
         return p
+
+    def database_target(self) -> str | Path:
+        if self.database_url:
+            return self.database_url
+        if self.database_keychain_service:
+            try:
+                result = subprocess.run(
+                    [
+                        "/usr/bin/security",
+                        "find-generic-password",
+                        "-w",
+                        "-s",
+                        self.database_keychain_service,
+                        "-a",
+                        "kol-search",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeError(
+                    "无法从 macOS 钥匙串读取数据库连接；请检查 "
+                    "KOL_DATABASE_URL_KEYCHAIN_SERVICE"
+                ) from exc
+            value = result.stdout.strip()
+            if not value:
+                raise RuntimeError("macOS 钥匙串中的数据库连接为空")
+            return value
+        return self.db_path()
 
     def backend_ready(self, name: str) -> tuple[bool, str | None]:
         if name == "mock":

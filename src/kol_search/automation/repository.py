@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .database import AutomationDatabase
+from kol_search.database import DatabaseConnection, DatabaseTarget
 from .models import (
     ACTION_TRANSITIONS,
     OPPORTUNITY_TRANSITIONS,
@@ -46,7 +46,7 @@ def _decode_json(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
-def _record(row: sqlite3.Row | None, json_fields: Mapping[str, tuple[str, Any]]) -> dict[str, Any] | None:
+def _record(row: Mapping[str, Any] | None, json_fields: Mapping[str, tuple[str, Any]]) -> dict[str, Any] | None:
     if row is None:
         return None
     output = dict(row)
@@ -82,12 +82,61 @@ CONVERSATION_JSON = {"evidence_json": ("evidence", {})}
 class AutomationStore:
     """Transaction-safe repository for the platform-independent automation core."""
 
-    def __init__(self, database: AutomationDatabase | str | Path) -> None:
+    def __init__(self, database: AutomationDatabase | DatabaseTarget) -> None:
         self.database = (
             database if isinstance(database, AutomationDatabase) else AutomationDatabase(database)
         )
 
     # Shared brand and deterministic account limits
+
+    def record_worker_heartbeat(
+        self,
+        worker_id: str,
+        *,
+        host_label: str,
+        version: str = "",
+        status: str = "online",
+        started_at: str | None = None,
+        now: str | None = None,
+    ) -> None:
+        if status not in {"online", "stopping", "offline"}:
+            raise ValueError("Invalid worker heartbeat status")
+        timestamp = now or utc_now()
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                """
+                INSERT INTO automation_worker_heartbeats(
+                    worker_id, host_label, version, status, started_at,
+                    last_seen_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    host_label=excluded.host_label,
+                    version=excluded.version,
+                    status=excluded.status,
+                    started_at=excluded.started_at,
+                    last_seen_at=excluded.last_seen_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    _required(worker_id, "worker_id"),
+                    _required(host_label, "host_label"),
+                    version,
+                    status,
+                    started_at or timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    def latest_worker_heartbeat(self) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM automation_worker_heartbeats
+                ORDER BY last_seen_at DESC LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def save_brand_config(
         self,
@@ -464,6 +513,7 @@ class AutomationStore:
                     job_type, platform_id, connection_id, priority, payload_json,
                     idempotency_key, available_at, created_at, updated_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
                 """,
                 (
                     job_type_value,
@@ -477,7 +527,7 @@ class AutomationStore:
                     timestamp,
                 ),
             )
-            return int(cursor.lastrowid)
+            return int(cursor.fetchone()["id"])
 
     def claim_next_job(
         self,
@@ -878,7 +928,7 @@ class AutomationStore:
 
     def _cancel_pending_opportunity_actions(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         opportunity_id: int,
         *,
         reason: str,
@@ -991,6 +1041,7 @@ class AutomationStore:
                     native_object_type, native_object_id, status, draft, payload_json,
                     idempotency_key, scheduled_at, created_at, updated_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
                 """,
                 (
                     opportunity_id,
@@ -1008,7 +1059,7 @@ class AutomationStore:
                     timestamp,
                 ),
             )
-            action_id = int(cursor.lastrowid)
+            action_id = int(cursor.fetchone()["id"])
             if opportunity_id is not None:
                 connection.execute(
                     """
@@ -1385,6 +1436,7 @@ class AutomationStore:
                     opportunity_id, action_id, outcome, policy_version, score,
                     rules_json, explanation, created_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
                 """,
                 (
                     opportunity_id,
@@ -1397,7 +1449,7 @@ class AutomationStore:
                     timestamp,
                 ),
             )
-            decision_id = int(cursor.lastrowid)
+            decision_id = int(cursor.fetchone()["id"])
             subject_type = "opportunity" if opportunity_id is not None else "action"
             subject_id = opportunity_id if opportunity_id is not None else action_id
             subject_table = (
@@ -1456,7 +1508,7 @@ class AutomationStore:
         """Count both completed writes and quota reserved by pending writes."""
         with self.database.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS count FROM automation_actions
                 WHERE connection_id=? AND action_type=?
                     AND status IN ('scheduled', 'executing', 'succeeded',
@@ -1516,16 +1568,21 @@ class AutomationStore:
 
         if not target_author_id:
             return False
+        json_target = (
+            "o.payload_json::jsonb ->> 'target_author_id'"
+            if self.database.is_postgres
+            else "json_extract(o.payload_json, '$.target_author_id')"
+        )
         with self.database.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT 1
                 FROM automation_actions a
                 JOIN automation_opportunities o ON o.id=a.opportunity_id
                 WHERE a.platform_id=? AND a.connection_id=?
                     AND a.status IN ('succeeded', 'confirmation_required')
                     AND COALESCE(a.finished_at, a.updated_at)>=?
-                    AND json_extract(o.payload_json, '$.target_author_id')=?
+                    AND {json_target}=?
                 LIMIT 1
                 """,
                 (platform_id, connection_id, since, target_author_id),
@@ -1856,7 +1913,7 @@ class AutomationStore:
 
     def _validate_connection(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         connection_id: int | None,
         platform_id: str,
     ) -> None:
@@ -1874,7 +1931,7 @@ class AutomationStore:
             )
 
     def _raise_job_transition(
-        self, connection: sqlite3.Connection, job_id: int, target: str
+        self, connection: DatabaseConnection, job_id: int, target: str
     ) -> None:
         row = connection.execute(
             "SELECT status FROM automation_jobs WHERE id=?", (job_id,)
@@ -1913,7 +1970,7 @@ class AutomationStore:
 
     def _effective_channel_state(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         *,
         platform_id: str,
         connection_id: int | None,
@@ -1963,7 +2020,7 @@ class AutomationStore:
 
     def _append_audit(
         self,
-        connection: sqlite3.Connection,
+        connection: DatabaseConnection,
         *,
         actor: str,
         event_type: str,
@@ -1978,6 +2035,7 @@ class AutomationStore:
             INSERT INTO automation_audit_events(
                 actor, event_type, object_type, object_id, platform_id, payload_json, created_at
             ) VALUES(?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 actor,
@@ -1989,7 +2047,7 @@ class AutomationStore:
                 created_at,
             ),
         )
-        return int(cursor.lastrowid)
+        return int(cursor.fetchone()["id"])
 
 
 def _required(value: str, field: str) -> str:
@@ -2014,7 +2072,7 @@ def _bounded_float(value: float, minimum: float, maximum: float, field: str) -> 
 
 
 def _grouped_counts(
-    connection: sqlite3.Connection,
+    connection: DatabaseConnection,
     table: str,
     column: str,
     where: str,

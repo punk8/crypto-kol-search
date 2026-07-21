@@ -3,14 +3,17 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from kol_search.database import DatabaseTarget, is_postgres_target
 from kol_search.platforms.kernel import PlatformRegistry
 
 
 def install_registered_platform_schemas(
-    path: str | Path, registry: PlatformRegistry
+    path: DatabaseTarget, registry: PlatformRegistry
 ) -> tuple[str, ...]:
     """Install platform-owned schemas in explicit registry order."""
 
+    if is_postgres_target(path):
+        return tuple(plugin.manifest.platform_id for plugin in registry.list_plugins())
     database_path = Path(path)
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(database_path) as connection:

@@ -35,6 +35,7 @@ def test_explicit_migrations_are_idempotent_and_coexist_with_legacy_tables(tmp_p
         4,
         5,
         6,
+        7,
     ]
     with database.connection() as connection:
         tables = {
@@ -49,7 +50,29 @@ def test_explicit_migrations_are_idempotent_and_coexist_with_legacy_tables(tmp_p
         "automation_opportunities",
         "automation_actions",
         "automation_channel_controls",
+        "automation_worker_heartbeats",
     }.issubset(tables)
+
+
+def test_worker_restart_replaces_heartbeat_start_time(tmp_path: Path) -> None:
+    store = AutomationStore(tmp_path / "heartbeat.db")
+    store.record_worker_heartbeat(
+        "mac-worker",
+        host_label="mac-mini",
+        started_at="2026-07-21T10:00:00+00:00",
+        now="2026-07-21T10:01:00+00:00",
+    )
+    store.record_worker_heartbeat(
+        "mac-worker",
+        host_label="mac-mini",
+        started_at="2026-07-21T11:00:00+00:00",
+        now="2026-07-21T11:01:00+00:00",
+    )
+
+    heartbeat = store.latest_worker_heartbeat()
+    assert heartbeat is not None
+    assert heartbeat["started_at"] == "2026-07-21T11:00:00+00:00"
+    assert heartbeat["last_seen_at"] == "2026-07-21T11:01:00+00:00"
 
 
 def test_shared_brand_config_and_per_account_quota(tmp_path: Path) -> None:

@@ -267,4 +267,22 @@ MIGRATIONS: tuple[Migration, ...] = (
             ON automation_conversations(platform_id, native_account_id, state);
         """,
     ),
+    Migration(
+        7,
+        "worker_heartbeats",
+        """
+        CREATE TABLE automation_worker_heartbeats (
+            worker_id TEXT PRIMARY KEY,
+            host_label TEXT NOT NULL,
+            version TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'online'
+                CHECK(status IN ('online', 'stopping', 'offline')),
+            started_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_automation_worker_heartbeats_seen
+            ON automation_worker_heartbeats(last_seen_at DESC);
+        """,
+    ),
 )

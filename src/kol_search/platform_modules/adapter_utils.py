@@ -51,7 +51,10 @@ def stable_native_id(*values: object, length: int = 24) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:length]
 
 
-def resolve_database_path(settings: object) -> Path | None:
+def resolve_database_path(settings: object) -> str | Path | None:
+    database_target = getattr(settings, "database_target", None)
+    if callable(database_target):
+        return database_target()
     db_path = getattr(settings, "db_path", None)
     if callable(db_path):
         return Path(db_path())

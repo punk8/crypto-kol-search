@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kol_search.discovery.promotion import KolStatus
+from kol_search.database import DatabaseTarget
 from kol_search.platform_modules.native_db import NativePlatformDatabase
 from kol_search.platform_modules.adapter_utils import stable_native_id
 from kol_search.platforms.x import XAccount, XTrend, XTrendTweet, XTweet
@@ -205,9 +206,10 @@ class XRepository:
 
     platform_id = "x"
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: DatabaseTarget) -> None:
         self.database = NativePlatformDatabase(path)
-        self.migrate()
+        if not self.database.is_postgres:
+            self.migrate()
 
     def migrate(self) -> None:
         with self.database.transaction() as connection:
@@ -258,7 +260,8 @@ class XRepository:
             )
             if track_as_kol:
                 connection.execute(
-                    "INSERT OR IGNORE INTO x_kols(account_id, updated_at) VALUES(?, ?)",
+                    """INSERT INTO x_kols(account_id, updated_at) VALUES(?, ?)
+                    ON CONFLICT(account_id) DO NOTHING""",
                     (account.external_id, now),
                 )
 
@@ -310,10 +313,11 @@ class XRepository:
                 )
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO x_tweet_metrics(
+                    INSERT INTO x_tweet_metrics(
                         tweet_id, captured_at, like_count, repost_count, reply_count,
                         quote_count, bookmark_count, view_count
                     ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(tweet_id, captured_at) DO NOTHING
                     """,
                     (
                         tweet.external_id, tweet.captured_at or now, tweet.metrics.likes,
@@ -330,9 +334,12 @@ class XRepository:
         with self.database.transaction() as connection:
             connection.executemany(
                 """
-                INSERT OR REPLACE INTO x_trends(
+                INSERT INTO x_trends(
                     id, name, rank, post_count, url, captured_at
                 ) VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id, captured_at) DO UPDATE SET
+                    name=excluded.name, rank=excluded.rank,
+                    post_count=excluded.post_count, url=excluded.url
                 """,
                 [
                     (
@@ -381,10 +388,12 @@ class XRepository:
             for value in values:
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO x_discovery_evidence(
+                    INSERT INTO x_discovery_evidence(
                         source_account_id, target_account_id, relation_type, evidence,
                         evidence_url, weight, observed_at
                     ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_account_id, target_account_id, relation_type, evidence)
+                    DO NOTHING
                     """,
                     (
                         value.get("source_account_id"), value["target_account_id"],
@@ -400,24 +409,24 @@ class XRepository:
         with self.database.transaction() as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(*) FROM x_discovery_evidence
+                SELECT COUNT(*) AS count FROM x_discovery_evidence
                 WHERE target_account_id=? AND relation_type='seed_relation'
                 """,
                 (account_id,),
             ).fetchone()
-        return int(row[0])
+        return int(row["count"])
 
     def recent_relevant_content_count(self, account_id: str, *, days: int = 30) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
         with self.database.transaction() as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(*) FROM x_tweets
+                SELECT COUNT(*) AS count FROM x_tweets
                 WHERE author_id=? AND created_at>=? AND relevance_score>=0.5
                 """,
                 (account_id, cutoff),
             ).fetchone()
-        return int(row[0])
+        return int(row["count"])
 
     def set_kol_status(
         self,
@@ -602,10 +611,12 @@ class XRepository:
             rows = connection.execute(
                 "SELECT status, COUNT(*) AS count FROM x_kols GROUP BY status"
             ).fetchall()
-            tweets = connection.execute("SELECT COUNT(*) FROM x_tweets").fetchone()[0]
+            tweets = connection.execute(
+                "SELECT COUNT(*) AS count FROM x_tweets"
+            ).fetchone()["count"]
             trends = connection.execute(
-                "SELECT COUNT(DISTINCT id) FROM x_trends"
-            ).fetchone()[0]
+                "SELECT COUNT(DISTINCT id) AS count FROM x_trends"
+            ).fetchone()["count"]
         result = {str(row["status"]): int(row["count"]) for row in rows}
         result["content"] = int(tweets)
         result["trends"] = int(trends)

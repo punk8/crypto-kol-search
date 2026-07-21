@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kol_search.discovery.promotion import KolStatus
+from kol_search.database import DatabaseTarget
 from kol_search.platform_modules.adapter_utils import stable_native_id
 from kol_search.platform_modules.native_db import NativePlatformDatabase
 from kol_search.platforms.xiaohongshu import (
@@ -203,9 +204,10 @@ def _ensure_columns(
 class XiaohongshuRepository:
     platform_id = "xiaohongshu"
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: DatabaseTarget) -> None:
         self.database = NativePlatformDatabase(path)
-        self.migrate()
+        if not self.database.is_postgres:
+            self.migrate()
 
     def migrate(self) -> None:
         with self.database.transaction() as connection:
@@ -252,7 +254,8 @@ class XiaohongshuRepository:
                 ),
             )
             connection.execute(
-                "INSERT OR IGNORE INTO xhs_kols(user_id, updated_at) VALUES(?, ?)",
+                """INSERT INTO xhs_kols(user_id, updated_at) VALUES(?, ?)
+                ON CONFLICT(user_id) DO NOTHING""",
                 (user.external_id, now),
             )
 
@@ -288,7 +291,8 @@ class XiaohongshuRepository:
                     ),
                 )
                 connection.execute(
-                    "INSERT OR IGNORE INTO xhs_note_metrics VALUES(?, ?, ?, ?, ?, ?)",
+                    """INSERT INTO xhs_note_metrics VALUES(?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(note_id, captured_at) DO NOTHING""",
                     (
                         note.external_id, note.captured_at or now, note.metrics.likes,
                         note.metrics.comments, note.metrics.collects, note.metrics.views,
@@ -339,9 +343,12 @@ class XiaohongshuRepository:
         with self.database.transaction() as connection:
             connection.executemany(
                 """
-                INSERT OR REPLACE INTO xhs_trends(
+                INSERT INTO xhs_trends(
                     id, name, rank, note_count, url, captured_at
                 ) VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id, captured_at) DO UPDATE SET
+                    name=excluded.name, rank=excluded.rank,
+                    note_count=excluded.note_count, url=excluded.url
                 """,
                 [
                     (
@@ -370,10 +377,12 @@ class XiaohongshuRepository:
         with self.database.transaction() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO xhs_discovery_evidence(
+                INSERT INTO xhs_discovery_evidence(
                     source_user_id, target_user_id, relation_type, evidence,
                     evidence_url, weight, observed_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_user_id, target_user_id, relation_type, evidence)
+                DO NOTHING
                 """,
                 (
                     source_user_id, target_user_id, relation_type, evidence,
@@ -411,10 +420,12 @@ class XiaohongshuRepository:
                     continue
                 cursor = connection.execute(
                     """
-                    INSERT OR IGNORE INTO xhs_discovery_evidence(
+                    INSERT INTO xhs_discovery_evidence(
                         source_user_id, target_user_id, relation_type, evidence,
                         evidence_url, weight, observed_at
                     ) VALUES(?, ?, 'seed_relation', ?, NULL, 0.20, ?)
+                    ON CONFLICT(source_user_id, target_user_id, relation_type, evidence)
+                    DO NOTHING
                     """,
                     (
                         source["author_id"],
@@ -432,24 +443,24 @@ class XiaohongshuRepository:
         with self.database.transaction() as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(*) FROM xhs_discovery_evidence
+                SELECT COUNT(*) AS count FROM xhs_discovery_evidence
                 WHERE target_user_id=? AND relation_type='seed_relation'
                 """,
                 (user_id,),
             ).fetchone()
-        return int(row[0])
+        return int(row["count"])
 
     def recent_relevant_content_count(self, user_id: str, *, days: int = 30) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
         with self.database.transaction() as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(*) FROM xhs_notes
+                SELECT COUNT(*) AS count FROM xhs_notes
                 WHERE author_id=? AND published_at>=? AND relevance_score>=0.5
                 """,
                 (user_id, cutoff),
             ).fetchone()
-        return int(row[0])
+        return int(row["count"])
 
     def set_kol_status(
         self,
@@ -571,11 +582,15 @@ class XiaohongshuRepository:
             rows = connection.execute(
                 "SELECT status, COUNT(*) AS count FROM xhs_kols GROUP BY status"
             ).fetchall()
-            notes = connection.execute("SELECT COUNT(*) FROM xhs_notes").fetchone()[0]
-            comments = connection.execute("SELECT COUNT(*) FROM xhs_comments").fetchone()[0]
+            notes = connection.execute(
+                "SELECT COUNT(*) AS count FROM xhs_notes"
+            ).fetchone()["count"]
+            comments = connection.execute(
+                "SELECT COUNT(*) AS count FROM xhs_comments"
+            ).fetchone()["count"]
             trends = connection.execute(
-                "SELECT COUNT(DISTINCT id) FROM xhs_trends"
-            ).fetchone()[0]
+                "SELECT COUNT(DISTINCT id) AS count FROM xhs_trends"
+            ).fetchone()["count"]
         result = {str(row["status"]): int(row["count"]) for row in rows}
         result["content"] = int(notes)
         result["comments"] = int(comments)

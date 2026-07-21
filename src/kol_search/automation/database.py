@@ -1,36 +1,28 @@
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from kol_search.database import DatabaseConnection, DatabaseRuntime, DatabaseTarget
 from .schema import MIGRATIONS
 
 
 class AutomationDatabase:
     """SQLite connection and migration owner for the shared automation tables."""
 
-    def __init__(self, path: str | Path, *, migrate: bool = True) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if migrate:
+    def __init__(self, path: DatabaseTarget, *, migrate: bool = True) -> None:
+        self.runtime = DatabaseRuntime(path)
+        self.path = self.runtime.path
+        self.is_postgres = self.runtime.is_postgres
+        if migrate and not self.is_postgres:
             self.migrate()
 
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            str(self.path),
-            timeout=10,
-            check_same_thread=False,
-            isolation_level=None,
-        )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=5000")
-        return connection
+    def connect(self) -> DatabaseConnection:
+        return self.runtime.connect()
 
     @contextmanager
-    def connection(self) -> Iterator[sqlite3.Connection]:
+    def connection(self) -> Iterator[DatabaseConnection]:
         """Open a read-oriented connection, closing it after use."""
         connection = self.connect()
         try:
@@ -39,11 +31,12 @@ class AutomationDatabase:
             connection.close()
 
     @contextmanager
-    def transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+    def transaction(self, *, immediate: bool = False) -> Iterator[DatabaseConnection]:
         """Run all enclosed writes atomically, optionally acquiring the writer lock eagerly."""
         connection = self.connect()
         try:
-            connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+            if not self.is_postgres:
+                connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             yield connection
             connection.commit()
         except Exception:
@@ -54,6 +47,8 @@ class AutomationDatabase:
             connection.close()
 
     def migrate(self) -> None:
+        if self.is_postgres:
+            raise RuntimeError("PostgreSQL schema migrations must be applied before runtime startup")
         connection = self.connect()
         try:
             connection.execute("PRAGMA journal_mode=WAL")
@@ -106,6 +101,8 @@ def _sql_statements(script: str) -> Iterator[str]:
     pending = ""
     for line in script.splitlines(keepends=True):
         pending += line
+        import sqlite3
+
         if sqlite3.complete_statement(pending):
             statement = pending.strip()
             if statement:

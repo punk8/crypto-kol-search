@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.git
+.venv
+.pytest_cache
+.ruff_cache
+data
+dist
+fixtures
+output
+seeds
+supabase
+tests

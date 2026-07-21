@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
@@ -40,27 +40,41 @@ from kol_search.settings import Settings, get_settings
 PACKAGE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
 
+
+class _QueueNotifier:
+    def notify(self) -> None:
+        """Web-only runtimes persist work for the external worker to poll."""
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     settings = get_settings()
-    if settings.web_host not in {"127.0.0.1", "localhost", "::1"} and not (
+    externally_served = settings.runtime_mode == "web" or settings.web_host not in {
+        "127.0.0.1", "localhost", "::1"
+    }
+    if externally_served and not (
         settings.admin_password and settings.session_secret
     ):
         raise RuntimeError(
             "非本机监听必须同时配置 KOL_ADMIN_PASSWORD 和 KOL_SESSION_SECRET"
         )
 
-    automation = AutomationStore(settings.db_path())
+    database_target = settings.database_target()
+    automation = AutomationStore(database_target)
     registry = build_default_registry(settings)
-    install_registered_platform_schemas(settings.db_path(), registry)
+    install_registered_platform_schemas(database_target, registry)
     _install_platform_routers(application, registry)
 
     # PlatformAutomationService owns shared orchestration only. Platform-native
     # repositories resolve their database directly from Settings.
     platform_service = PlatformAutomationService(automation, registry, settings)
-    platform_service.initialize_connections()
-    platform_worker = AutomationWorker(automation, platform_service)
-    scheduler = PlatformAutomationScheduler(platform_service, platform_worker, settings)
+    if settings.runtime_mode == "web":
+        platform_service.initialize_defaults()
+        platform_worker: AutomationWorker | _QueueNotifier = _QueueNotifier()
+        scheduler: PlatformAutomationScheduler | None = None
+    else:
+        platform_service.initialize_connections()
+        platform_worker = AutomationWorker(automation, platform_service)
+        scheduler = PlatformAutomationScheduler(platform_service, platform_worker, settings)
 
     application.state.settings = settings
     application.state.automation = automation
@@ -69,13 +83,17 @@ async def lifespan(application: FastAPI):
     application.state.platform_worker = platform_worker
     application.state.scheduler = scheduler
 
-    platform_worker.start()
-    scheduler.start()
+    if isinstance(platform_worker, AutomationWorker):
+        platform_worker.start()
+    if scheduler is not None:
+        scheduler.start()
     try:
         yield
     finally:
-        scheduler.stop()
-        platform_worker.stop()
+        if scheduler is not None:
+            scheduler.stop()
+        if isinstance(platform_worker, AutomationWorker):
+            platform_worker.stop()
         registry.close()
 
 
@@ -145,6 +163,12 @@ async def admin_security(request: Request, call_next: Any) -> Response:
             origin = request.headers.get("origin")
             if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
                 return JSONResponse({"detail": "CSRF origin rejected"}, status_code=403)
+    if (
+        settings.web_read_only
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.url.path not in {"/login", "/logout"}
+    ):
+        return JSONResponse({"detail": "Preview deployment is read-only"}, status_code=503)
     return await call_next(request)
 
 
@@ -201,6 +225,29 @@ def _local_day_start_utc(settings: Settings) -> str:
     ).isoformat()
 
 
+def _worker_status(automation: AutomationStore) -> dict[str, object]:
+    heartbeat = automation.latest_worker_heartbeat()
+    if not heartbeat:
+        return {"online": False, "status": "missing", "last_seen_at": None}
+    try:
+        last_seen = datetime.fromisoformat(
+            str(heartbeat["last_seen_at"]).replace("Z", "+00:00")
+        )
+        online = (
+            heartbeat.get("status") == "online"
+            and datetime.now(timezone.utc) - last_seen <= timedelta(seconds=90)
+        )
+    except (KeyError, TypeError, ValueError):
+        online = False
+    return {
+        "online": online,
+        "status": heartbeat.get("status"),
+        "worker_id": heartbeat.get("worker_id"),
+        "host_label": heartbeat.get("host_label"),
+        "last_seen_at": heartbeat.get("last_seen_at"),
+    }
+
+
 def _platform_center_context(request: Request) -> dict[str, object]:
     automation = _automation(request)
     service = _platform_service(request)
@@ -216,6 +263,18 @@ def _platform_center_context(request: Request) -> dict[str, object]:
     platforms: list[dict[str, object]] = []
     alerts: list[dict[str, str]] = []
     day_start = _local_day_start_utc(settings)
+    worker = _worker_status(automation)
+    if not worker["online"]:
+        alerts.append(
+            {
+                "severity": "critical",
+                "title": "Mac Worker 离线",
+                "message": "云端任务会继续排队，但不会执行平台读取、私信或评论。",
+                "platform_name": "Worker",
+                "created_at": str(worker.get("last_seen_at") or "尚无心跳"),
+                "href": "/health",
+            }
+        )
 
     for manifest in registry.list_manifests():
         platform_id = manifest.platform_id
@@ -343,6 +402,7 @@ def _platform_center_context(request: Request) -> dict[str, object]:
         "platforms": platforms,
         "alerts": alerts[:20],
         "recent_runs": recent_runs,
+        "worker": worker,
     }
 
 
@@ -352,9 +412,10 @@ def _platform_center_context(request: Request) -> dict[str, object]:
 def health(request: Request) -> dict[str, object]:
     return {
         "status": "ok",
-        "database": str(_settings(request).db_path()),
+        "database": "postgresql" if _settings(request).database_url else "sqlite",
         "platforms": list(request.app.state.platform_registry.platform_ids),
         "automation": _automation(request).get_global_summary(),
+        "worker": _worker_status(_automation(request)),
     }
 
 
