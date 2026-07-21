@@ -5,8 +5,10 @@ import io
 import json
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -15,6 +17,13 @@ from fastapi.templating import Jinja2Templates
 
 from kol_search.db import Store
 from kol_search.jobs import JobWorker, WeeklyScheduler
+from kol_search.postiz import (
+    PostizClient,
+    PostizError,
+    PostizSubmissionUncertain,
+    safe_postiz_release_url,
+    sanitize_postiz_error,
+)
 from kol_search.replies import ReplyPublisher
 from kol_search.settings import PROJECT_ROOT, Settings, get_settings
 from kol_search.twitter.base import TwitterBackendError
@@ -62,6 +71,29 @@ def _settings(request: Request) -> Settings:
 
 def _textarea_lines(value: str) -> list[str]:
     return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def _postiz_client(settings: Settings) -> PostizClient:
+    if not settings.postiz_ready():
+        raise PostizError("Postiz is not configured")
+    return PostizClient(
+        settings.postiz_base_url,
+        settings.postiz_api_key or "",
+        timeout=settings.postiz_timeout_seconds,
+    )
+
+
+def _postiz_publish_at(value: str, timezone_name: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("Please provide a valid scheduled time") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(timezone_name))
+    parsed = parsed.astimezone(timezone.utc)
+    if parsed <= datetime.now(timezone.utc):
+        raise ValueError("Scheduled time must be in the future")
+    return parsed.isoformat()
 
 
 def _backends(settings: Settings) -> list[dict]:
@@ -308,6 +340,209 @@ def update_topic_cluster(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RedirectResponse(url="/radar/topics", status_code=303)
+
+
+@app.get("/publishing", response_class=HTMLResponse)
+def content_publishing(
+    request: Request,
+    topic_id: int | None = Query(default=None),
+) -> HTMLResponse:
+    store = _store(request)
+    settings = _settings(request)
+    topic = store.get_topic_cluster(topic_id) if topic_id else None
+    topic_publication = (
+        store.get_postiz_publication_for_topic(topic_id) if topic_id else None
+    )
+    integrations = []
+    postiz_error = None
+    if settings.postiz_ready():
+        client = _postiz_client(settings)
+        try:
+            integrations = [item for item in client.list_integrations() if not item.disabled]
+        except PostizError as exc:
+            postiz_error = str(exc)
+        finally:
+            client.close()
+    return templates.TemplateResponse(
+        request=request,
+        name="publishing.html",
+        context={
+            "publications": store.list_postiz_publications(),
+            "topic": topic,
+            "topic_publication": topic_publication,
+            "integrations": integrations,
+            "postiz_ready": settings.postiz_ready(),
+            "postiz_error": postiz_error,
+            "timezone": settings.timezone,
+        },
+    )
+
+
+@app.post("/publishing")
+def create_content_publication(
+    request: Request,
+    topic_cluster_id: Annotated[int, Form()],
+    integration_id: Annotated[str, Form()],
+    content_text: Annotated[str, Form()],
+    publish_mode: Annotated[str, Form()] = "now",
+    scheduled_at: Annotated[str, Form()] = "",
+) -> RedirectResponse:
+    store = _store(request)
+    settings = _settings(request)
+    topic = store.get_topic_cluster(topic_cluster_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic Radar item not found")
+    if topic["editorial_status"] != "adopted":
+        raise HTTPException(status_code=422, detail="Adopt the Topic Radar item before publishing")
+    content = content_text.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="Publication text cannot be empty")
+    if publish_mode not in {"now", "schedule"}:
+        raise HTTPException(status_code=422, detail="Invalid publish mode")
+    if not settings.postiz_ready():
+        raise HTTPException(status_code=503, detail="Postiz is not configured")
+    try:
+        publish_at = (
+            _postiz_publish_at(scheduled_at, settings.timezone)
+            if publish_mode == "schedule"
+            else datetime.now(timezone.utc).isoformat()
+        )
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    client = _postiz_client(settings)
+    try:
+        integration = next(
+            (
+                item
+                for item in client.list_integrations()
+                if item.id == integration_id and not item.disabled
+            ),
+            None,
+        )
+        if not integration:
+            raise HTTPException(status_code=422, detail="Select an active Postiz integration")
+        try:
+            publication_id = store.create_postiz_publication(
+                topic_cluster_id=topic_cluster_id,
+                integration_id=integration.id,
+                integration_name=integration.name,
+                integration_identifier=integration.identifier,
+                content_text=content,
+                publish_mode=publish_mode,
+                scheduled_at=publish_at if publish_mode == "schedule" else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        store.claim_postiz_submission(publication_id)
+        try:
+            result = client.create_post(
+                integration=integration,
+                content=content,
+                publish_mode=publish_mode,
+                publish_at=publish_at,
+            )
+        except PostizSubmissionUncertain as exc:
+            store.finish_postiz_submission(
+                publication_id,
+                status="confirmation_required",
+                sanitized_error=sanitize_postiz_error(exc),
+            )
+        except PostizError as exc:
+            store.finish_postiz_submission(
+                publication_id,
+                status="failed",
+                sanitized_error=sanitize_postiz_error(exc),
+            )
+        else:
+            store.finish_postiz_submission(
+                publication_id,
+                status="scheduled" if publish_mode == "schedule" else "submitted",
+                postiz_post_id=result.post_id,
+            )
+    except PostizError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        client.close()
+    return RedirectResponse(url=f"/publishing?created={publication_id}", status_code=303)
+
+
+@app.post("/publishing/{publication_id}/refresh")
+def refresh_content_publication(request: Request, publication_id: int) -> RedirectResponse:
+    store = _store(request)
+    settings = _settings(request)
+    publication = store.get_postiz_publication(publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Postiz publication not found")
+    if not publication.get("postiz_post_id"):
+        raise HTTPException(status_code=422, detail="Publication has no confirmed Postiz post ID")
+    if not settings.postiz_ready():
+        raise HTTPException(status_code=503, detail="Postiz is not configured")
+    anchor_text = publication.get("scheduled_at") or publication.get("submitted_at")
+    anchor = datetime.fromisoformat(anchor_text).astimezone(timezone.utc)
+    now = datetime.now(timezone.utc)
+    client = _postiz_client(settings)
+    try:
+        item = client.get_post(
+            publication["postiz_post_id"],
+            start_date=(anchor - timedelta(days=2)).isoformat(),
+            end_date=(max(anchor, now) + timedelta(days=2)).isoformat(),
+        )
+    except PostizError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        client.close()
+    if not item:
+        store.update_postiz_status(
+            publication_id,
+            sanitized_error="Postiz did not return this post in the publication window",
+        )
+        return RedirectResponse(url="/publishing?refresh=missing", status_code=303)
+
+    state = str(item.get("state") or "").upper()
+    raw_release_url = str(item.get("releaseURL") or "").strip() or None
+    release_url = safe_postiz_release_url(raw_release_url)
+    if state == "PUBLISHED" and release_url:
+        store.update_postiz_status(
+            publication_id,
+            status="published",
+            postiz_state=state,
+            published_url=release_url,
+        )
+        store.update_topic_cluster(
+            int(publication["topic_cluster_id"]),
+            status="published",
+            published_url=release_url,
+        )
+    elif state == "PUBLISHED":
+        store.update_postiz_status(
+            publication_id,
+            status="confirmation_required",
+            postiz_state=state,
+            sanitized_error=(
+                "Postiz reported an unsafe release URL"
+                if raw_release_url
+                else "Postiz reported PUBLISHED without a release URL"
+            ),
+        )
+    elif state == "ERROR":
+        store.update_postiz_status(
+            publication_id,
+            status="failed",
+            postiz_state=state,
+            sanitized_error="Postiz reported a publishing error",
+        )
+    elif state == "DRAFT":
+        store.update_postiz_status(publication_id, status="draft", postiz_state=state)
+    elif state == "QUEUE":
+        store.update_postiz_status(publication_id, status="scheduled", postiz_state=state)
+    else:
+        store.update_postiz_status(
+            publication_id,
+            postiz_state=state or None,
+            sanitized_error="Postiz returned an unknown publication state",
+        )
+    return RedirectResponse(url="/publishing?refresh=ok", status_code=303)
 
 
 @app.post("/signal-scans")

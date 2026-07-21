@@ -23,7 +23,7 @@
         <label>选题提纲<textarea name="outline" rows="4">{{ item.outline }}</textarea></label>
         <label>单条 X 帖草稿<textarea name="draft" rows="4">{{ item.draft }}</textarea></label>
         <label>发布链接<input name="published_url" value="{{ item.published_url or '' }}" placeholder="https://x.com/your_brand/status/..."></label>
-        <div class="editor-actions">{% if item.representative_url %}<a class="button ghost" href="{{ item.representative_url }}" target="_blank" rel="noopener">代表帖子</a>{% endif %}<button class="ghost">保存编辑</button><button name="status" value="adopted">采用</button><button name="status" value="published">标记已发布</button><button class="ghost" name="status" value="skipped">跳过</button></div>
+        <div class="editor-actions">{% if item.representative_url %}<a class="button ghost" href="{{ item.representative_url }}" target="_blank" rel="noopener">代表帖子</a>{% endif %}<button class="ghost">保存编辑</button><button name="status" value="adopted">采用</button>{% if item.editorial_status == 'adopted' %}<a class="button" href="/publishing?topic_id={{ item.id }}">Send to Content Publishing</a>{% endif %}<button name="status" value="published">标记已发布</button><button class="ghost" name="status" value="skipped">跳过</button></div>
       </form>
     </div>
   </article>

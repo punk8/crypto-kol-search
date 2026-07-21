@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Content Publishing · Crypto KOL Search{% endblock %}
+{% block content %}
+<section class="workspace-head">
+  <div><p class="eyebrow">OWNED CONTENT</p><h1>Content Publishing</h1><p>将已采用的 Topic Radar 草稿提交到一个 Postiz integration。账号连接、排期执行和平台凭据仍由 Postiz 管理。</p></div>
+  <a class="button ghost" href="/radar/topics">返回 Topic Radar</a>
+</section>
+
+{% if not postiz_ready %}<div class="notice warning">Postiz 尚未配置。请在环境中设置 POSTIZ_BASE_URL 和 POSTIZ_API_KEY；API key 不会保存到数据库。</div>{% endif %}
+{% if postiz_error %}<div class="notice warning">Postiz unavailable: {{ postiz_error }}</div>{% endif %}
+
+{% if topic %}
+<section class="card publishing-compose">
+  <p class="eyebrow">TOPIC RADAR SOURCE</p>
+  <h2>{{ topic.title }}</h2>
+  <p>{{ topic.summary }}</p>
+  {% if topic_publication %}
+    <div class="notice warning">此 Topic Radar 项目已绑定 publication #{{ topic_publication.id }}，不会创建第二条 Postiz 记录。</div>
+  {% elif topic.editorial_status != 'adopted' %}
+    <div class="notice warning">请先在 Topic Radar 中采用该选题，再提交到 Postiz。</div>
+  {% elif postiz_ready and integrations and not postiz_error %}
+  <form action="/publishing" method="post" class="settings-form">
+    <input type="hidden" name="topic_cluster_id" value="{{ topic.id }}">
+    <div class="form-grid">
+      <label>Postiz integration
+        <select name="integration_id" required><option value="">选择一个已连接账号</option>{% for integration in integrations %}<option value="{{ integration.id }}">{{ integration.name }} · {{ integration.identifier }}</option>{% endfor %}</select>
+      </label>
+      <label>Publish mode
+        <select name="publish_mode"><option value="now">Publish now</option><option value="schedule">Schedule</option></select>
+      </label>
+      <label>Scheduled time（{{ timezone }}）
+        <input type="datetime-local" name="scheduled_at">
+      </label>
+      <label class="wide">Exact post text
+        <textarea name="content_text" rows="7" required>{{ topic.draft }}</textarea>
+      </label>
+    </div>
+    <p class="field-note">一次只提交一个 integration 和一条 owned post。提交结果不明确时不会自动重试。</p>
+    <div class="form-actions"><button type="submit" onclick="return confirm('确认将这条 owned post 提交到所选 Postiz integration？')">Submit to Postiz</button></div>
+  </form>
+  {% elif postiz_ready and not integrations and not postiz_error %}
+    <div class="notice warning">Postiz 当前没有可用的 connected integration。请在 Postiz 中完成账号连接。</div>
+  {% endif %}
+</section>
+{% endif %}
+
+<section>
+  <div class="section-title"><h2>Publications</h2><p>本地只保留 Topic Radar 来源、所选 integration、精确文本和一个 Postiz 结果。</p></div>
+  <div class="table-wrap"><table><thead><tr><th>ID</th><th>Topic</th><th>Integration</th><th>Mode</th><th>Status</th><th>Schedule</th><th>Result</th><th>Action</th></tr></thead><tbody>
+  {% for item in publications %}<tr>
+    <td>#{{ item.id }}</td>
+    <td>{{ item.topic_title }}<small>{{ item.content_text }}</small></td>
+    <td>{{ item.integration_name }}<small>{{ item.integration_identifier }} · {{ item.integration_id }}</small></td>
+    <td>{{ item.publish_mode }}</td>
+    <td><span class="status {{ item.status }}">{{ item.status }}</span>{% if item.postiz_state %}<small>Postiz: {{ item.postiz_state }}</small>{% endif %}{% if item.sanitized_error %}<small class="error">{{ item.sanitized_error }}</small>{% endif %}</td>
+    <td>{{ item.scheduled_at or 'now' }}</td>
+    <td>{% if item.published_url %}<a href="{{ item.published_url }}" target="_blank" rel="noopener">View post</a>{% elif item.postiz_post_id %}{{ item.postiz_post_id }}{% else %}—{% endif %}</td>
+    <td>{% if item.postiz_post_id and item.status not in ['published','failed'] %}<form action="/publishing/{{ item.id }}/refresh" method="post"><button class="ghost">Refresh status</button></form>{% else %}—{% endif %}</td>
+  </tr>{% else %}<tr><td colspan="8" class="empty"><strong>暂无待发布内容</strong><p>从趋势雷达采纳一个主题，生成品牌内容并提交到 Postiz。</p><a class="button ghost" href="/radar/topics">查看趋势雷达</a></td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

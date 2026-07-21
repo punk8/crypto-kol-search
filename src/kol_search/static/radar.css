@@ -249,6 +249,24 @@
   background: white;
 }
 
+.publishing-compose .settings-form {
+  margin-top: 20px;
+}
+
+.publishing-compose .form-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.publishing-compose textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 11px 13px;
+}
+
 .settings-form .form-actions {
   margin-top: 18px;
 }
@@ -319,6 +337,10 @@
 
 @media (max-width: 760px) {
   .settings-form .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .publishing-compose .form-grid {
     grid-template-columns: 1fr;
   }
 
