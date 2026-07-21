@@ -64,6 +64,23 @@ KOL_ENABLE_SIGNAL_SCAN=true
 KOL_SIGNAL_INTERVAL_MINUTES=30
 ```
 
+## Postiz owned-content publishing
+
+Postiz 只用于发布公司自有内容，不处理 KOL DM、人物雷达评论、X Sender 或 OpenCLI reply。
+Phase 1 从已采用的 Topic Radar 草稿开始，一次选择一个 Postiz integration、提交一条帖子，
+并保存一个 Postiz post ID 与最终链接。账号连接、OAuth、日历和 analytics 仍在 Postiz 中管理。
+
+```bash
+POSTIZ_BASE_URL=https://api.postiz.com
+POSTIZ_API_KEY=
+POSTIZ_TIMEOUT_SECONDS=30
+```
+
+API key 只从环境读取，不写入 SQLite。当前集成使用 Postiz public API 的
+`GET /public/v1/integrations`、`POST /public/v1/posts` 和带日期范围的
+`GET /public/v1/posts`。`now` 立即提交，`schedule` 使用明确的 ISO 时间。
+提交超时或回执不完整会进入 `confirmation_required`，不会自动重试。
+
 ## 初始种子库
 
 `seeds/crypto_seed_library.csv` 包含 140 个策展候选：100 个进入基础核验名单，40 个保留在 review 队列。基础名单固定为 80 个个人、20 个机构，满足 12 个主题、70/20/10 语言和 6/6/4/4 机构配额；`seeds/crypto_handles.txt` 只包含其中 80 个个人账号。

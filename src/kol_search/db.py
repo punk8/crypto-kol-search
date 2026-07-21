@@ -251,6 +251,30 @@ CREATE TABLE IF NOT EXISTS topic_metric_snapshots (
 CREATE INDEX IF NOT EXISTS idx_topic_metrics_cluster_time
 ON topic_metric_snapshots(cluster_id, captured_at);
 
+CREATE TABLE IF NOT EXISTS postiz_publications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_cluster_id INTEGER NOT NULL UNIQUE,
+    integration_id TEXT NOT NULL,
+    integration_name TEXT NOT NULL,
+    integration_identifier TEXT NOT NULL,
+    content_text TEXT NOT NULL,
+    publish_mode TEXT NOT NULL,
+    scheduled_at TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    postiz_post_id TEXT UNIQUE,
+    postiz_state TEXT,
+    published_url TEXT,
+    sanitized_error TEXT,
+    created_at TEXT NOT NULL,
+    submitted_at TEXT,
+    published_at TEXT,
+    last_checked_at TEXT,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (topic_cluster_id) REFERENCES topic_clusters(id)
+);
+CREATE INDEX IF NOT EXISTS idx_postiz_publications_status
+ON postiz_publications(status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS candidate_scores (
     run_id INTEGER NOT NULL,
     account_id TEXT NOT NULL,
@@ -510,6 +534,23 @@ class Store:
             )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, ?)",
+                (utc_now(),),
+            )
+            connection.execute(
+                """
+                UPDATE postiz_publications
+                SET status='confirmation_required',
+                    sanitized_error=COALESCE(
+                        sanitized_error,
+                        'Application restarted during Postiz submission; confirm in Postiz before retrying.'
+                    ),
+                    updated_at=?
+                WHERE status='submitting'
+                """,
+                (utc_now(),),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, ?)",
                 (utc_now(),),
             )
 
@@ -1890,3 +1931,171 @@ class Store:
                     utc_now(), cluster_id,
                 ),
             )
+
+    def create_postiz_publication(
+        self,
+        *,
+        topic_cluster_id: int,
+        integration_id: str,
+        integration_name: str,
+        integration_identifier: str,
+        content_text: str,
+        publish_mode: str,
+        scheduled_at: str | None,
+    ) -> int:
+        if publish_mode not in {"now", "schedule"}:
+            raise ValueError("Invalid Postiz publish mode")
+        now = utc_now()
+        try:
+            with self.connection() as connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO postiz_publications(
+                        topic_cluster_id, integration_id, integration_name,
+                        integration_identifier, content_text, publish_mode,
+                        scheduled_at, status, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+                    """,
+                    (
+                        topic_cluster_id,
+                        integration_id,
+                        integration_name,
+                        integration_identifier,
+                        content_text,
+                        publish_mode,
+                        scheduled_at,
+                        now,
+                        now,
+                    ),
+                )
+                return int(cursor.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("This Topic Radar item already has a Postiz publication") from exc
+
+    def claim_postiz_submission(self, publication_id: int) -> dict[str, Any]:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM postiz_publications WHERE id=?", (publication_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(publication_id)
+            if row["status"] != "draft":
+                raise ValueError("Postiz publication is not a draft")
+            now = utc_now()
+            connection.execute(
+                """
+                UPDATE postiz_publications
+                SET status='submitting', submitted_at=?, sanitized_error=NULL, updated_at=?
+                WHERE id=? AND status='draft'
+                """,
+                (now, now, publication_id),
+            )
+            connection.commit()
+            return dict(row)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def finish_postiz_submission(
+        self,
+        publication_id: int,
+        *,
+        status: str,
+        postiz_post_id: str | None = None,
+        sanitized_error: str | None = None,
+    ) -> None:
+        if status not in {"submitted", "scheduled", "failed", "confirmation_required"}:
+            raise ValueError("Invalid Postiz submission status")
+        with self.connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE postiz_publications
+                SET status=?, postiz_post_id=COALESCE(?, postiz_post_id),
+                    sanitized_error=?, updated_at=?
+                WHERE id=? AND status='submitting'
+                """,
+                (status, postiz_post_id, sanitized_error, utc_now(), publication_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Postiz publication is not being submitted")
+
+    def update_postiz_status(
+        self,
+        publication_id: int,
+        *,
+        status: str | None = None,
+        postiz_state: str | None = None,
+        published_url: str | None = None,
+        sanitized_error: str | None = None,
+    ) -> None:
+        allowed = {"draft", "submitted", "scheduled", "published", "failed", "confirmation_required"}
+        if status is not None and status not in allowed:
+            raise ValueError("Invalid Postiz publication status")
+        now = utc_now()
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM postiz_publications WHERE id=?", (publication_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError(publication_id)
+            next_status = status or row["status"]
+            connection.execute(
+                """
+                UPDATE postiz_publications
+                SET status=?, postiz_state=COALESCE(?, postiz_state),
+                    published_url=COALESCE(?, published_url), sanitized_error=?,
+                    published_at=CASE WHEN ?='published' THEN COALESCE(published_at, ?) ELSE published_at END,
+                    last_checked_at=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    next_status,
+                    postiz_state,
+                    published_url,
+                    sanitized_error,
+                    next_status,
+                    now,
+                    now,
+                    now,
+                    publication_id,
+                ),
+            )
+
+    def get_postiz_publication(self, publication_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT pp.*, tc.title AS topic_title, tc.summary AS topic_summary
+                FROM postiz_publications pp
+                JOIN topic_clusters tc ON tc.id=pp.topic_cluster_id
+                WHERE pp.id=?
+                """,
+                (publication_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_postiz_publication_for_topic(self, topic_cluster_id: int) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT id FROM postiz_publications WHERE topic_cluster_id=?",
+                (topic_cluster_id,),
+            ).fetchone()
+        return self.get_postiz_publication(int(row["id"])) if row else None
+
+    def list_postiz_publications(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT pp.*, tc.title AS topic_title, tc.summary AS topic_summary
+                FROM postiz_publications pp
+                JOIN topic_clusters tc ON tc.id=pp.topic_cluster_id
+                ORDER BY pp.created_at DESC, pp.id DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]

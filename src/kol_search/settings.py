@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
 
+    postiz_base_url: str = Field(default="https://api.postiz.com", alias="POSTIZ_BASE_URL")
+    postiz_api_key: str | None = Field(default=None, alias="POSTIZ_API_KEY")
+    postiz_timeout_seconds: float = Field(default=30.0, alias="POSTIZ_TIMEOUT_SECONDS")
+
     web_host: str = Field(default="127.0.0.1", alias="KOL_WEB_HOST")
     web_port: int = Field(default=8765, alias="KOL_WEB_PORT")
     timezone: str = Field(default="Asia/Shanghai", alias="KOL_TIMEZONE")
@@ -97,6 +101,9 @@ class Settings(BaseSettings):
         if not p.is_absolute():
             p = PROJECT_ROOT / p
         return p
+
+    def postiz_ready(self) -> bool:
+        return bool(self.postiz_base_url.strip() and self.postiz_api_key)
 
     def backend_ready(self, name: str) -> tuple[bool, str | None]:
         if name == "mock":
