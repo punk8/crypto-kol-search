@@ -489,7 +489,7 @@ class XiaohongshuRepository:
                     value,
                     score,
                     json.dumps(reasons),
-                    int(refresh_qualified_at),
+                    refresh_qualified_at,
                     now,
                     now,
                     user_id,

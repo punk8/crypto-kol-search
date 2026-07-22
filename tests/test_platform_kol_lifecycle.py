@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +36,47 @@ def _settings(*, inactive_pause_days: int = 90) -> SimpleNamespace:
 
 def _timestamp_days_ago(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+class _RecordingConnection:
+    def __init__(self) -> None:
+        self.parameters: tuple[object, ...] = ()
+
+    def execute(self, _sql: str, parameters: tuple[object, ...]) -> SimpleNamespace:
+        self.parameters = parameters
+        return SimpleNamespace(rowcount=1)
+
+
+class _RecordingDatabase:
+    def __init__(self) -> None:
+        self.connection = _RecordingConnection()
+
+    def transaction(self) -> nullcontext[_RecordingConnection]:
+        return nullcontext(self.connection)
+
+
+@pytest.mark.parametrize(
+    ("repository_type", "native_id", "status", "expected"),
+    (
+        (XRepository, "account-1", KolStatus.ACTIVE, True),
+        (XRepository, "account-1", KolStatus.PAUSED, False),
+        (XiaohongshuRepository, "user-1", KolStatus.ACTIVE, True),
+        (XiaohongshuRepository, "user-1", KolStatus.PAUSED, False),
+    ),
+)
+def test_kol_status_uses_boolean_case_predicate(
+    repository_type: type[XRepository] | type[XiaohongshuRepository],
+    native_id: str,
+    status: KolStatus,
+    expected: bool,
+) -> None:
+    repository = repository_type.__new__(repository_type)
+    database = _RecordingDatabase()
+    repository.database = database
+
+    repository.set_kol_status(native_id, status, score=0.8)
+
+    assert database.connection.parameters[3] is expected
 
 
 def test_active_promotion_has_an_inactivity_grace_period() -> None:
