@@ -22,6 +22,16 @@ def create_x_read_provider(
     settings = settings or get_settings()
     name = (backend or settings.twitter_backend or "twitterapi_io").lower().strip()
 
+    def build_opencli() -> XReadProvider:
+        from kol_search.twitter.opencli import OpenCliTwitterClient
+
+        return OpenCliTwitterClient(
+            command=settings.opencli_command,
+            profile=settings.opencli_profile,
+            timeout=settings.opencli_timeout_seconds,
+            resolve_account_id=resolve_account_id,
+        )
+
     if name == "mock":
         if not settings.enable_mock_backend:
             raise TwitterBackendError(
@@ -31,13 +41,18 @@ def create_x_read_provider(
         return MockTwitterClient()
 
     if name == "official":
-        token = settings.x_bearer_token
+        token = settings.x_api_bearer_token()
         if not token:
             raise TwitterBackendError(
                 "Official backend requires X_BEARER_TOKEN.",
                 hint="Copy .env.example → .env and follow README.md",
             )
-        return OfficialTwitterClient(bearer_token=token)
+        primary = OfficialTwitterClient(bearer_token=token)
+        if settings.twitter_fallback_backend == "opencli":
+            from kol_search.twitter.failover import FailoverTwitterClient
+
+            return FailoverTwitterClient(primary, build_opencli())
+        return primary
 
     if name == "third_party":
         return ThirdPartyTwitterClient(
@@ -45,16 +60,6 @@ def create_x_read_provider(
             api_key=settings.twitter_tp_api_key or "",
             api_key_header=settings.twitter_tp_api_key_header,
             supports_user_search=settings.twitter_tp_supports_user_search,
-        )
-
-    def build_opencli() -> XReadProvider:
-        from kol_search.twitter.opencli import OpenCliTwitterClient
-
-        return OpenCliTwitterClient(
-            command=settings.opencli_command,
-            profile=settings.opencli_profile,
-            timeout=settings.opencli_timeout_seconds,
-            resolve_account_id=resolve_account_id,
         )
 
     if name == "opencli":

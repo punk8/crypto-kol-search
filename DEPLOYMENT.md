@@ -23,6 +23,9 @@ The production Mac keeps its password-bearing URL in the login Keychain. Its
 KOL_DATABASE_URL_KEYCHAIN_SERVICE=kol-search-database-url
 KOL_RUNTIME_MODE=worker
 KOL_WORKER_ID=mac-worker
+X_BEARER_TOKEN_KEYCHAIN_SERVICE=kol-search-x-bearer-token
+TWITTER_BACKEND=official
+TWITTER_FALLBACK_BACKEND=opencli
 ```
 
 Local development may still set `KOL_DATABASE_URL` directly instead. Keep all

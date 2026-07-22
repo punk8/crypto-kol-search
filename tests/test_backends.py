@@ -79,6 +79,25 @@ def test_twitterapi_io_key_alias_and_readiness():
     assert settings.backend_ready("twitterapi_io") == (True, None)
 
 
+def test_official_token_can_be_loaded_from_keychain():
+    completed = subprocess.CompletedProcess(
+        ["security"], 0, stdout="keychain-token\n", stderr=""
+    )
+    with patch("kol_search.settings.subprocess.run", return_value=completed) as run:
+        settings = Settings(
+            _env_file=None,
+            X_BEARER_TOKEN_KEYCHAIN_SERVICE="kol-search-x-bearer-token",
+        )
+
+        assert settings.x_api_bearer_token() == "keychain-token"
+        assert settings.backend_ready("official") == (True, None)
+        assert run.call_args.args[0][-3:] == [
+            "kol-search-x-bearer-token",
+            "-a",
+            "kol-search",
+        ]
+
+
 def test_real_backend_is_default_and_mock_requires_explicit_opt_in():
     settings = Settings(_env_file=None)
     assert settings.twitter_backend == "twitterapi_io"

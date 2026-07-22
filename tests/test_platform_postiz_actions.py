@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from kol_search.platforms import (
@@ -92,7 +92,7 @@ def _execute(
 
 def test_x_platform_schedules_postiz_action_with_confirmed_receipt() -> None:
     publisher = RecordingPostiz(create_result=[{"postId": "postiz-scheduled-1"}])
-    scheduled_at = "2026-07-22T03:30:00+00:00"
+    scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
 
     result = _execute(
         publisher,

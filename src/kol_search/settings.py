@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     )
 
     x_bearer_token: str | None = Field(default=None, alias="X_BEARER_TOKEN")
+    x_bearer_token_keychain_service: str | None = Field(
+        default=None, alias="X_BEARER_TOKEN_KEYCHAIN_SERVICE"
+    )
     x_api_key: str | None = Field(default=None, alias="X_API_KEY")
     x_api_secret: str | None = Field(default=None, alias="X_API_SECRET")
     x_access_token: str | None = Field(default=None, alias="X_ACCESS_TOKEN")
@@ -145,32 +148,48 @@ class Settings(BaseSettings):
         if self.database_url:
             return self.database_url
         if self.database_keychain_service:
-            try:
-                result = subprocess.run(
-                    [
-                        "/usr/bin/security",
-                        "find-generic-password",
-                        "-w",
-                        "-s",
-                        self.database_keychain_service,
-                        "-a",
-                        "kol-search",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=True,
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                raise RuntimeError(
-                    "无法从 macOS 钥匙串读取数据库连接；请检查 "
-                    "KOL_DATABASE_URL_KEYCHAIN_SERVICE"
-                ) from exc
-            value = result.stdout.strip()
-            if not value:
-                raise RuntimeError("macOS 钥匙串中的数据库连接为空")
-            return value
+            return self._keychain_secret(
+                self.database_keychain_service,
+                setting_name="KOL_DATABASE_URL_KEYCHAIN_SERVICE",
+            )
         return self.db_path()
+
+    def x_api_bearer_token(self) -> str | None:
+        if self.x_bearer_token:
+            return self.x_bearer_token
+        if not self.x_bearer_token_keychain_service:
+            return None
+        return self._keychain_secret(
+            self.x_bearer_token_keychain_service,
+            setting_name="X_BEARER_TOKEN_KEYCHAIN_SERVICE",
+        )
+
+    @staticmethod
+    def _keychain_secret(service: str, *, setting_name: str) -> str:
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/bin/security",
+                    "find-generic-password",
+                    "-w",
+                    "-s",
+                    service,
+                    "-a",
+                    "kol-search",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(
+                f"无法从 macOS 钥匙串读取密钥；请检查 {setting_name}"
+            ) from exc
+        value = result.stdout.strip()
+        if not value:
+            raise RuntimeError(f"{setting_name} 对应的 macOS 钥匙串内容为空")
+        return value
 
     def backend_ready(self, name: str) -> tuple[bool, str | None]:
         if name == "mock":
@@ -181,7 +200,11 @@ class Settings(BaseSettings):
                 else "Mock 后端仅限测试；如确需使用，请显式设置 KOL_ENABLE_MOCK_BACKEND=true",
             )
         if name == "official":
-            return (bool(self.x_bearer_token), None if self.x_bearer_token else "缺少 X_BEARER_TOKEN")
+            try:
+                ready = bool(self.x_api_bearer_token())
+            except RuntimeError as exc:
+                return False, str(exc)
+            return ready, None if ready else "缺少 X_BEARER_TOKEN"
         if name == "third_party":
             ready = bool(self.twitter_tp_base_url and self.twitter_tp_api_key)
             return ready, None if ready else "缺少 TWITTER_TP_BASE_URL 或 TWITTER_TP_API_KEY"
