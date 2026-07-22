@@ -9,7 +9,55 @@ from kol_search.platform_modules import (
     XiaohongshuRepository,
     XiaohongshuUser,
 )
+from kol_search.platform_modules.x_adapter import XAutomationAdapter
 from kol_search.platforms.x import XTrend, XTrendTweet
+
+
+def test_x_persistence_reuses_account_identity_across_providers(tmp_path: Path) -> None:
+    repository = XRepository(tmp_path / "x-provider-identity.db")
+    repository.upsert_account(
+        XAccount(
+            external_id="opencli:alice",
+            username="Alice",
+            source_provider="opencli",
+        ),
+        track_as_kol=False,
+    )
+    adapter = XAutomationAdapter(object(), repository=repository)
+    official_account = XAccount(
+        external_id="123456",
+        username="alice",
+        display_name="Alice Official",
+        source_provider="official",
+    )
+    official_tweet = XTweet(
+        external_id="tweet-official",
+        author_external_id="123456",
+        author_username="alice",
+        text="RWA research",
+        source_provider="official",
+    )
+
+    adapter._persist([official_account], [official_tweet], [], [])
+
+    assert official_account.external_id == "opencli:alice"
+    assert official_tweet.author_external_id == "opencli:alice"
+    with repository.database.transaction() as connection:
+        accounts = connection.execute(
+            "SELECT id, display_name, source_provider FROM x_accounts"
+        ).fetchall()
+        tweet = connection.execute(
+            "SELECT author_id FROM x_tweets WHERE id=?", ("tweet-official",)
+        ).fetchone()
+    assert [dict(row) for row in accounts] == [
+        {
+            "id": "opencli:alice",
+            "display_name": "Alice Official",
+            "source_provider": "official",
+        }
+    ]
+    assert tweet is not None
+    assert tweet["author_id"] == "opencli:alice"
 
 
 def test_x_and_xiaohongshu_keep_independent_native_models(tmp_path: Path) -> None:

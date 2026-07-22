@@ -222,9 +222,15 @@ class XRepository:
         with self.database.transaction():
             yield
 
-    def upsert_account(self, account: XAccount, *, track_as_kol: bool = True) -> None:
+    def upsert_account(self, account: XAccount, *, track_as_kol: bool = True) -> str:
         now = _now()
+        handle = account.username.lstrip("@")
         with self.database.transaction() as connection:
+            existing = connection.execute(
+                "SELECT id FROM x_accounts WHERE lower(handle)=lower(?) LIMIT 1",
+                (handle,),
+            ).fetchone()
+            account_id = str(existing["id"]) if existing is not None else account.external_id
             connection.execute(
                 """
                 INSERT INTO x_accounts(
@@ -247,7 +253,7 @@ class XRepository:
                     updated_at=excluded.updated_at
                 """,
                 (
-                    account.external_id, account.username.lstrip("@"), account.display_name,
+                    account_id, handle, account.display_name,
                     account.description,
                     account.followers_count, account.following_count, account.tweet_count,
                     account.listed_count, int(account.verified), int(account.protected),
@@ -262,8 +268,9 @@ class XRepository:
                 connection.execute(
                     """INSERT INTO x_kols(account_id, updated_at) VALUES(?, ?)
                     ON CONFLICT(account_id) DO NOTHING""",
-                    (account.external_id, now),
+                    (account_id, now),
                 )
+        return account_id
 
     def upsert_tweets(self, tweets: list[XTweet]) -> None:
         if not tweets:

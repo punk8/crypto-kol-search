@@ -304,14 +304,16 @@ class XAutomationAdapter:
         repository = self.repository
         rich_ids = {account.external_id for account in accounts}
         trend_tweet_ids = {item.tweet.external_id for item in trend_tweets}
+        account_aliases: dict[str, str] = {}
         for tweet in tweets:
             if (
                 tweet.author_external_id not in rich_ids
                 and repository.get_kol(tweet.author_external_id) is None
             ):
-                repository.upsert_account(
+                original_id = tweet.author_external_id
+                account_aliases[original_id] = repository.upsert_account(
                     XAccount(
-                        external_id=tweet.author_external_id,
+                        external_id=original_id,
                         username=tweet.author_username or tweet.author_external_id,
                         source_provider=tweet.source_provider,
                         captured_at=tweet.captured_at,
@@ -319,7 +321,14 @@ class XAutomationAdapter:
                     track_as_kol=tweet.external_id not in trend_tweet_ids,
                 )
         for account in accounts:
-            repository.upsert_account(account)
+            original_id = account.external_id
+            canonical_id = repository.upsert_account(account)
+            account_aliases[original_id] = canonical_id
+            account.external_id = canonical_id
+        for tweet in tweets:
+            tweet.author_external_id = account_aliases.get(
+                tweet.author_external_id, tweet.author_external_id
+            )
         repository.upsert_tweets(tweets)
         repository.upsert_trends(trends)
         repository.upsert_trend_tweets(trend_tweets)
