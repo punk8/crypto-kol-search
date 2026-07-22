@@ -5,7 +5,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from kol_search.twitter.models import XAccount, XReadCapabilities
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
 from kol_search.settings import Settings
 from kol_search.twitter.base import TwitterBackendError
 from kol_search.twitter.failover import FailoverTwitterClient
@@ -533,3 +533,48 @@ def test_failover_does_not_hide_bad_request():
     client = FailoverTwitterClient(Primary(), Fallback())
     with pytest.raises(TwitterBackendError):
         client.search_users("bad")
+
+
+def test_failover_routes_opencli_account_timelines_to_opencli():
+    class Primary:
+        name = "official"
+        capabilities = XReadCapabilities(user_timeline=True)
+
+        def get_user_tweets(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise AssertionError("OpenCLI identities are not valid official X user IDs")
+
+        def close(self):
+            return None
+
+    class Fallback:
+        name = "opencli"
+        capabilities = XReadCapabilities(user_timeline=True)
+
+        def __init__(self):
+            self.calls = []
+
+        def get_user_tweets(
+            self,
+            user_id: str,
+            max_results: int = 10,
+            *,
+            username: str | None = None,
+            include_replies: bool = False,
+        ):
+            self.calls.append((user_id, max_results, username, include_replies))
+            return [XTweet(id="tweet-1", author_id=user_id, author_username=username)]
+
+        def close(self):
+            return None
+
+    fallback = Fallback()
+    client = FailoverTwitterClient(Primary(), fallback)
+
+    tweets = client.get_user_tweets(
+        "opencli:alice", max_results=5, username="alice", include_replies=True
+    )
+
+    assert [tweet.id for tweet in tweets] == ["tweet-1"]
+    assert fallback.calls == [("opencli:alice", 5, "alice", True)]
+    assert client.diagnostics["backend_calls"] == {"official": 0, "opencli": 1}
+    assert client.diagnostics["active_backend"] == "official"

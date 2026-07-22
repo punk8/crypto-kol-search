@@ -102,6 +102,14 @@ class FailoverTwitterClient:
         username: str | None = None,
         include_replies: bool = False,
     ) -> list[XTweet]:
+        if user_id.startswith("opencli:") and self.fallback.capabilities.user_timeline:
+            self.diagnostics["backend_calls"][self.fallback.name] += 1
+            return self.fallback.get_user_tweets(
+                user_id,
+                max_results=max_results,
+                username=username,
+                include_replies=include_replies,
+            )
         return self._call(
             "get_user_tweets",
             user_id,
