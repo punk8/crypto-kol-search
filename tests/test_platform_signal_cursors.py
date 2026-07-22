@@ -109,6 +109,49 @@ def test_x_signal_scan_uses_native_handle_without_replacing_stable_cursor_id():
     assert observed == [("123456", "alice")]
 
 
+def test_x_signal_scan_resolves_opencli_ids_for_official_timelines():
+    observed: list[tuple[str, str]] = []
+
+    class Reader:
+        name = "official+opencli"
+
+        def get_users_by_usernames(self, usernames):  # noqa: ANN001, ANN202
+            assert usernames == ["alice"]
+            return [
+                SimpleNamespace(
+                    external_id="123456",
+                    username="alice",
+                    source_provider="official",
+                )
+            ]
+
+        def get_user_tweets(  # noqa: ANN202
+            self,
+            external_id,  # noqa: ANN001
+            _limit,  # noqa: ANN001
+            *,
+            username,  # noqa: ANN001
+        ):
+            observed.append((external_id, username))
+            return []
+
+    registry = PlatformRegistry(
+        [create_x_plugin(SimpleNamespace(), client_factory=Reader)]
+    )
+    result = registry.dispatch(
+        "x",
+        "scan_signals",
+        payload={
+            "account_external_ids": ["opencli:alice"],
+            "account_targets": [{"id": "opencli:alice", "handle": "alice"}],
+            "include_trends": False,
+        },
+    )
+
+    assert result.success is True
+    assert observed == [("123456", "alice")]
+
+
 def test_xiaohongshu_signal_cursor_filters_old_notes_and_is_isolated_per_account():
     class Reader:
         provider = "cursor-test"

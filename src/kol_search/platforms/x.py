@@ -591,6 +591,36 @@ class _XRuntime:
             for item in (context.payload.get("account_targets") or ())
             if isinstance(item, Mapping)
         }
+        timeline_ids: dict[str, str] = {}
+        opencli_targets = {
+            external_id: str(
+                target_by_id.get(external_id, {}).get("handle")
+                or target_by_id.get(external_id, {}).get("username")
+                or ""
+            ).lstrip("@")
+            for external_id in account_ids
+            if external_id.startswith("opencli:")
+        }
+        lookup = getattr(client, "get_users_by_usernames", None)
+        if opencli_targets and callable(lookup):
+            try:
+                profiles = {
+                    account.username.casefold(): account
+                    for account in (
+                        _x_account(value)
+                        for value in lookup(
+                            list(dict.fromkeys(opencli_targets.values()))
+                        )
+                    )
+                }
+                timeline_ids = {
+                    external_id: profiles[handle.casefold()].external_id
+                    for external_id, handle in opencli_targets.items()
+                    if handle.casefold() in profiles
+                }
+            except Exception:
+                # The original OpenCLI identity remains a valid fallback route.
+                timeline_ids = {}
         items: list[object] = []
         warnings: list[str] = []
         attempted = 0
@@ -605,7 +635,7 @@ class _XRuntime:
                 tweets = [
                     _x_tweet(item)
                     for item in client.get_user_tweets(  # type: ignore[attr-defined]
-                        external_id,
+                        timeline_ids.get(external_id, external_id),
                         limit,
                         username=username,
                     )
