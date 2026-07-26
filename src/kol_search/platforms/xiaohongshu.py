@@ -10,7 +10,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from kol_search.platforms.kernel import (
-    ActionExecutionResult,
     PlatformCapability,
     PlatformHealthResult,
     PlatformManifest,
@@ -37,7 +36,7 @@ class XiaohongshuUser(BaseModel):
     anomaly_signals: tuple[str, ...] = ()
     avatar_url: str | None = None
     profile_url: str | None = None
-    source_provider: str = "opencli"
+    source_provider: str = "unknown"
     captured_at: str | None = None
 
 
@@ -62,7 +61,7 @@ class XiaohongshuNote(BaseModel):
     url: str | None = None
     metrics: XiaohongshuNoteMetrics = Field(default_factory=XiaohongshuNoteMetrics)
     relevance_score: float = Field(default=0.0, ge=0.0, le=1.0)
-    source_provider: str = "opencli"
+    source_provider: str = "unknown"
     captured_at: str | None = None
 
 
@@ -88,7 +87,7 @@ class XiaohongshuComment(BaseModel):
     created_at: str | None = None
     likes: int = 0
     replies: int = 0
-    source_provider: str = "opencli"
+    source_provider: str = "unknown"
     captured_at: str | None = None
 
 
@@ -101,18 +100,10 @@ XIAOHONGSHU_MANIFEST = PlatformManifest(
             PlatformCapability.CONTENT_SEARCH,
             PlatformCapability.TIMELINE_FEED,
             PlatformCapability.NATIVE_TRENDS,
-            PlatformCapability.COMMENT,
-            PlatformCapability.DM,
         }
     ),
     default_scan_interval_seconds=30 * 60,
-    safety_limits={
-        "comment_hourly": 3,
-        "comment_daily": 10,
-        "dm_hourly": 2,
-        "dm_daily": 5,
-        "author_cooldown_days": 7,
-    },
+    safety_limits={},
     workbench_path="/platforms/xiaohongshu",
     metadata={
         "content_types": ("note", "video_note", "comment"),
@@ -237,7 +228,7 @@ def _user(source: object) -> XiaohongshuUser:
         anomaly_signals=anomaly_signals,
         avatar_url=_attr(source, "profile_image_url"),
         profile_url=_attr(source, "url"),
-        source_provider=str(_attr(source, "source_provider", "opencli") or "opencli"),
+        source_provider=str(_attr(source, "source_provider", "unknown") or "unknown"),
         captured_at=_attr(source, "captured_at"),
     )
 
@@ -248,7 +239,7 @@ def _note(source: object) -> XiaohongshuNote:
     title = lines[0].strip() if lines else ""
     body = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
     raw = _attr(source, "raw", {}) or {}
-    raw_item = raw.get("opencli", {}) if isinstance(raw, Mapping) else {}
+    raw_item = raw if isinstance(raw, Mapping) else {}
     native_type = str(
         raw_item.get("type") or raw_item.get("note_type") or "unknown"
     ).lower()
@@ -279,7 +270,7 @@ def _note(source: object) -> XiaohongshuNote:
             collects=_count(_attr(source, "bookmark_count", 0)),
             views=_count(_attr(source, "view_count", 0)),
         ),
-        source_provider=str(_attr(source, "source_provider", "opencli") or "opencli"),
+        source_provider=str(_attr(source, "source_provider", "unknown") or "unknown"),
         captured_at=_attr(source, "captured_at"),
     )
 
@@ -350,7 +341,7 @@ def _comment(source: Mapping[str, Any], note_external_id: str) -> XiaohongshuCom
         ),
         likes=_count(source.get("likes") or source.get("like_count")),
         replies=_count(source.get("replies") or source.get("reply_count")),
-        source_provider="opencli",
+        source_provider=str(source.get("source_provider") or "unknown"),
     )
 
 
@@ -366,24 +357,11 @@ class _XiaohongshuRuntime:
 
     def provider(self) -> object:
         if self._provider is None:
-            if self._provider_factory is not None:
-                self._provider = self._provider_factory()
-            else:
-                from kol_search.platforms.opencli import OpenCliXiaohongshuReader
-
-                self._provider = OpenCliXiaohongshuReader(
-                    command=str(getattr(self.settings, "opencli_command", "opencli")),
-                    profile=str(
-                        getattr(
-                            self.settings,
-                            "xiaohongshu_opencli_profile",
-                            "ddd",
-                        )
-                    ),
-                    timeout=float(
-                        getattr(self.settings, "opencli_timeout_seconds", 90.0)
-                    ),
+            if self._provider_factory is None:
+                raise RuntimeError(
+                    "Xiaohongshu is disabled until an HTTP API provider is configured"
                 )
+            self._provider = self._provider_factory()
         return self._provider
 
     def close(self) -> None:
@@ -394,6 +372,12 @@ class _XiaohongshuRuntime:
             self._provider = None
 
     def health(self) -> PlatformHealthResult:
+        if self._provider_factory is None:
+            return PlatformHealthResult(
+                platform_id="xiaohongshu",
+                ready=False,
+                detail="HTTP API provider is not configured",
+            )
         result = self.provider().health_check()  # type: ignore[attr-defined]
         return PlatformHealthResult(
             platform_id="xiaohongshu",
@@ -557,28 +541,6 @@ class _XiaohongshuRuntime:
             metadata=metadata,
         )
 
-    def refresh_outcomes(self, context: PlatformTaskContext) -> PlatformTaskResult:
-        from kol_search.platform_modules.browser_actions import (
-            refresh_xiaohongshu_browser_outcomes,
-        )
-
-        if context.settings is None:
-            context = replace(context, settings=self.settings)
-        return refresh_xiaohongshu_browser_outcomes(context)
-
-    def execute_action(self, context: PlatformTaskContext) -> ActionExecutionResult:
-        try:
-            from kol_search.platform_modules.browser_actions import (
-                execute_xiaohongshu_browser_action,
-            )
-
-            if context.settings is None:
-                context = replace(context, settings=self.settings)
-            return execute_xiaohongshu_browser_action(context)
-        except Exception as exc:
-            return ActionExecutionResult.failed(str(exc))
-
-
 def _strings(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value.strip(),) if value.strip() else ()
@@ -660,17 +622,9 @@ def xiaohongshu_manifest(settings: object | None = None) -> PlatformManifest:
         getattr(settings, "xiaohongshu_signal_interval_minutes", None)
         or getattr(settings, "signal_interval_minutes", 30)
     )
-    limits = {
-        "comment_hourly": int(getattr(settings, "comment_hourly_limit", 3)),
-        "comment_daily": int(getattr(settings, "comment_daily_limit", 10)),
-        "dm_hourly": int(getattr(settings, "dm_hourly_limit", 2)),
-        "dm_daily": int(getattr(settings, "dm_daily_limit", 5)),
-        "author_cooldown_days": int(getattr(settings, "author_cooldown_days", 7)),
-    }
     return replace(
         XIAOHONGSHU_MANIFEST,
         default_scan_interval_seconds=max(60, interval_minutes * 60),
-        safety_limits=limits,
     )
 
 
@@ -687,7 +641,7 @@ def create_xiaohongshu_plugin(
     *,
     provider_factory: Callable[[], object] | None = None,
 ) -> PlatformPlugin:
-    """Create a Xiaohongshu plugin with its own lazy OpenCLI provider."""
+    """Create a Xiaohongshu plugin backed by an injected HTTP API provider."""
 
     from kol_search.platform_modules.adapter_utils import build_opportunity_task
     from kol_search.platform_modules.xiaohongshu_adapter import (
@@ -708,8 +662,6 @@ def create_xiaohongshu_plugin(
             PlatformTaskName.BUILD_OPPORTUNITIES: (
                 lambda context: build_opportunity_task(adapter, context)
             ),
-            PlatformTaskName.EXECUTE_ACTION: runtime.execute_action,
-            PlatformTaskName.REFRESH_OUTCOMES: runtime.refresh_outcomes,
         },
         native_models={
             "user": XiaohongshuUser,

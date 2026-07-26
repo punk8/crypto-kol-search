@@ -113,8 +113,8 @@ def test_platform_center_renders_independent_platform_summaries():
         ],
     )
 
-    assert "平台中心" in html
-    assert "这里只汇总运行健康度" in html
+    assert "平台数据源" in html
+    assert "平台评分保持独立" in html
     assert "/platforms/x" in html
     assert "/platforms/xiaohongshu" in html
     assert "评论通道已暂停" in html
@@ -173,12 +173,12 @@ def test_workspace_hides_search_controls_when_platform_lacks_search():
         ],
     )
 
-    assert "Video Test 工作台" in html
+    assert "Video Test 数据源" in html
     assert "尚未开放搜索能力" in html
     assert "name=\"query\"" not in html
     assert "timeline/feed" not in html  # The localized capability label is rendered instead.
-    assert "时间线 / Feed" in html
-    assert "当前仅开放只读能力" in html
+    assert "自动化" not in html
+    assert "KOL Discover" in html
 
 
 def test_workspace_renders_native_evidence_and_only_provided_actions():
@@ -261,4 +261,4 @@ def test_workspace_renders_native_evidence_and_only_provided_actions():
     assert "审核草稿" in html
     assert "name=\"query\"" in html
     assert "账号搜索" in html
-    assert "私信" in html and "未接入" in html
+    assert "私信" not in html

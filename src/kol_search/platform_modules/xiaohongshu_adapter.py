@@ -176,6 +176,9 @@ class XiaohongshuAutomationAdapter:
             row["actionable"] = bool(row.get("native_id_resolved", True))
         return rows
 
+    def list_trends(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return self.repository.list_recent_trends(limit=limit)
+
     def get_kol(self, native_id: str) -> dict[str, Any] | None:
         row = self.repository.get_kol(native_id)
         if row is not None:

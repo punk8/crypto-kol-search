@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}SignalScope · Trend & KOL Intelligence{% endblock %}
+{% block body_class %}discover-body{% endblock %}
+{% block app_header %}{% endblock %}
+{% block main_class %}discover-main{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="/static/discover.css?v=6">
+<link rel="stylesheet" href="/static/discover-responsive.css?v=6">
+{% endblock %}
+{% block content %}
+<div class="discover-shell">
+  <aside class="discover-sidebar">
+    <a class="discover-brand" href="/trends" aria-label="SignalScope home">
+      <span class="discover-brand-mark"><i></i></span>
+      <strong>Signal<span>Scope</span></strong>
+    </a>
+
+    <nav class="discover-primary-nav" aria-label="Product navigation">
+      <a href="/trends" class="{{ 'is-active' if view == 'trends' else '' }}"><span>⌁</span>Trend Radar</a>
+      <a href="/hot-content" class="{{ 'is-active' if view == 'hot_content' else '' }}"><span>♨</span>Hot Content</a>
+      <a href="/kols" class="{{ 'is-active' if view == 'kols' else '' }}"><span>⌕</span>KOL Discover</a>
+      <a href="/watchlist" class="{{ 'is-active' if view == 'watchlist' else '' }}"><span>◫</span>Watchlist</a>
+      {% if not split_frontend %}<a href="/platforms"><span>◇</span>Data Sources</a>{% endif %}
+    </nav>
+
+    <div class="discover-sidebar-group">
+      <p>PLATFORMS</p>
+      {% for item in platforms %}
+      <a href="/kols?platform={{ item.id }}">
+        <span class="source-mark source-mark--{{ item.tone }}">{{ item.mark }}</span>
+        {{ item.name }}
+        <small>{{ item.status }}</small>
+      </a>
+      {% endfor %}
+    </div>
+
+    {% if x_provider_usage %}
+    <div class="discover-provider-budget discover-provider-budget--{{ x_provider_usage.state }}">
+      <p>GETXAPI BUDGET</p>
+      <em>
+        {% if x_provider_usage.state == "low_balance" %}Low balance
+        {% elif x_provider_usage.state == "budget_exhausted" %}Daily budget reached
+        {% elif x_provider_usage.state == "unavailable" %}Monitor unavailable
+        {% else %}Healthy{% endif %}
+      </em>
+      <strong>{{ x_provider_usage.requests_today }} / {{ x_provider_usage.daily_limit }} calls today</strong>
+      <small>
+        {% if x_provider_usage.credits_remaining is not none %}
+        {{ x_provider_usage.credits_remaining|round(4) }} credits remaining
+        {% else %}
+        Balance unavailable
+        {% endif %}
+      </small>
+    </div>
+    {% endif %}
+
+    <div class="discover-sidebar-footer">
+      {% if not split_frontend %}<a href="/settings/brand"><span>⚙</span>Settings</a>{% endif %}
+      <div class="mock-profile"><i>AM</i><span><strong>Alex Morgan</strong><small>Research workspace</small></span></div>
+    </div>
+  </aside>
+
+  <section class="discover-workspace">
+    <header class="discover-mobile-header">
+      <a class="discover-brand" href="/trends"><span class="discover-brand-mark"><i></i></span><strong>Signal<span>Scope</span></strong></a>
+      <span class="mock-pill"><i></i>{{ data_mode }}</span>
+    </header>
+    <nav class="discover-mobile-nav" aria-label="Mobile product navigation">
+      <a href="/trends" class="{{ 'is-active' if view == 'trends' else '' }}">Trends</a>
+      <a href="/hot-content" class="{{ 'is-active' if view == 'hot_content' else '' }}">Hot Content</a>
+      <a href="/kols" class="{{ 'is-active' if view == 'kols' else '' }}">KOL Discover</a>
+      <a href="/watchlist" class="{{ 'is-active' if view == 'watchlist' else '' }}">Watchlist</a>
+      {% if not split_frontend %}<a href="/platforms">Sources</a>{% endif %}
+    </nav>
+
+    {% if notice %}<div class="discover-notice discover-notice--success" role="status">{{ notice }}</div>{% endif %}
+    {% if error %}<div class="discover-notice discover-notice--error" role="alert">{{ error }}</div>{% endif %}
+    {% if x_live_error %}<div class="discover-notice discover-notice--error" role="alert">X live data is temporarily unavailable: {{ x_live_error }}</div>{% endif %}
+
+    {% if view == "trends" %}
+      {% include "discover_trends.html" %}
+    {% elif view == "hot_content" %}
+      {% include "discover_hot_content.html" %}
+    {% elif view == "kols" %}
+      {% include "discover_kols.html" %}
+    {% else %}
+      {% include "discover_watchlist.html" %}
+    {% endif %}
+  </section>
+</div>
+<script>
+(() => {
+  const watchButton = document.querySelector('[data-watchlist-button]');
+  if (watchButton) {
+    const storageKey = `signalscope:watchlist:${watchButton.dataset.platform}:${watchButton.dataset.kolId}`;
+    let added = false;
+    try { added = window.localStorage.getItem(storageKey) === 'added'; } catch (_) { added = false; }
+    const renderWatchState = () => {
+      watchButton.textContent = added ? watchButton.dataset.addedLabel : watchButton.dataset.addLabel;
+      watchButton.setAttribute('aria-pressed', added ? 'true' : 'false');
+      watchButton.classList.toggle('is-added', added);
+    };
+    watchButton.addEventListener('click', () => {
+      added = !added;
+      try {
+        if (added) window.localStorage.setItem(storageKey, 'added');
+        else window.localStorage.removeItem(storageKey);
+      } catch (_) {}
+      renderWatchState();
+    });
+    renderWatchState();
+  }
+
+  const applyButton = document.querySelector('[data-mock-apply]');
+  const filterFeedback = document.querySelector('[data-filter-feedback]');
+  applyButton?.addEventListener('click', () => {
+    applyButton.textContent = 'Applied';
+    applyButton.classList.add('is-applied');
+    if (filterFeedback) {
+      filterFeedback.hidden = false;
+      filterFeedback.textContent = 'Mock filters applied to the current platform results.';
+    }
+  });
+})();
+</script>
+{% endblock %}

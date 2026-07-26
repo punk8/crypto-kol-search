@@ -170,6 +170,9 @@ class XAutomationAdapter:
     ) -> list[dict[str, Any]]:
         return self.repository.list_kols(status=status, limit=limit)
 
+    def list_trends(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return self.repository.list_recent_trends(limit=limit)
+
     def workspace_feed(self, *, limit: int = 30) -> dict[str, object]:
         """Expose X-native workspace views without teaching the core X schemas."""
 

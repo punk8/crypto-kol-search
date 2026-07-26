@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+from atexit import register
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 from typing import Any, Iterator, Protocol, runtime_checkable
 
 
@@ -51,8 +53,10 @@ class DatabaseConnection(Protocol):
 
 
 class PostgresConnection:
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: Any, *, release: Any | None = None) -> None:
         self._connection = connection
+        self._release = release
+        self._closed = False
 
     @property
     def in_transaction(self) -> bool:
@@ -75,7 +79,17 @@ class PostgresConnection:
         self._connection.rollback()
 
     def close(self) -> None:
-        self._connection.close()
+        if self._closed:
+            return
+        self._closed = True
+        if self._release is None:
+            self._connection.close()
+            return
+        try:
+            if self.in_transaction:
+                self._connection.rollback()
+        finally:
+            self._release(self._connection)
 
 
 class DatabaseRuntime:
@@ -84,6 +98,8 @@ class DatabaseRuntime:
     def __init__(self, target: DatabaseTarget) -> None:
         self.target = target
         self.is_postgres = is_postgres_target(target)
+        self._pool: Any | None = None
+        self._pool_lock = Lock()
         if not self.is_postgres:
             path = Path(target)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,21 +120,50 @@ class DatabaseRuntime:
             connection.execute("PRAGMA busy_timeout=5000")
             return connection
 
-        try:
-            import psycopg
-            from psycopg.rows import dict_row
-        except ImportError as exc:  # pragma: no cover - exercised in packaging checks
-            raise RuntimeError(
-                "PostgreSQL requires psycopg; install the project runtime dependencies"
-            ) from exc
-        connection = psycopg.connect(
-            str(self.target),
-            row_factory=dict_row,
-            autocommit=False,
-            prepare_threshold=None,
-            options="-c search_path=kol_search,public",
-        )
-        return PostgresConnection(connection)
+        pool = self._postgres_pool()
+        connection = pool.getconn(timeout=15)
+        return PostgresConnection(connection, release=pool.putconn)
+
+    def _postgres_pool(self) -> Any:
+        if self._pool is not None:
+            return self._pool
+        with self._pool_lock:
+            if self._pool is not None:
+                return self._pool
+            try:
+                from psycopg.rows import dict_row
+                from psycopg_pool import ConnectionPool
+            except ImportError as exc:  # pragma: no cover - packaging check
+                raise RuntimeError(
+                    'PostgreSQL pooling requires: pip install "psycopg[pool]"'
+                ) from exc
+            self._pool = ConnectionPool(
+                conninfo=str(self.target),
+                min_size=1,
+                max_size=4,
+                timeout=15,
+                max_idle=300,
+                max_lifetime=1800,
+                open=True,
+                kwargs={
+                    "row_factory": dict_row,
+                    "autocommit": False,
+                    "prepare_threshold": None,
+                    "options": "-c search_path=kol_search,public",
+                },
+            )
+            register(self.close)
+            return self._pool
+
+    def wait_ready(self, *, timeout: float = 15) -> None:
+        if self.is_postgres:
+            self._postgres_pool().wait(timeout=timeout)
+
+    def close(self) -> None:
+        with self._pool_lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.close()
 
     @contextmanager
     def connection(self) -> Iterator[DatabaseConnection]:

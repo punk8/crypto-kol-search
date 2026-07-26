@@ -1,0 +1,95 @@
+<div class="discover-page" id="watchlist">
+  <header class="page-heading">
+    <div>
+      <p class="page-kicker">LATEST PUBLIC CONTENT</p>
+      <h1>KOL Watchlist</h1>
+      <p>Track each platform account independently and connect new content to rising themes.</p>
+    </div>
+    <div class="heading-actions">
+      <span class="mock-pill"><i></i>{{ data_mode }}</span>
+      <span class="semantic-note">◷ Published and retrieved times stay separate</span>
+    </div>
+  </header>
+
+  <div class="watch-summary">
+    {% for label, value, note in watchlist_summary %}
+    <article><i>{{ ("◎", "▣", "▤", "↗")[loop.index0] }}</i><span><strong>{{ value }}</strong>{{ label }}<small>{{ note }}</small></span></article>
+    {% endfor %}
+  </div>
+
+  <nav class="platform-tabs watch-tabs" aria-label="Filter latest content">
+    {% for item in platforms %}
+    <a href="/watchlist?platform={{ item.id }}&mode={{ watch_mode }}" class="{{ 'is-active' if selected_platform == item.id else '' }}"><span class="source-mark source-mark--{{ item.tone }}">{{ item.mark }}</span>{{ item.name }}</a>
+    {% endfor %}
+    <span class="sort-control">{{ 'ϟ Highest velocity' if watch_mode == 'breakout' else '◷ Newest first' }}⌄</span>
+  </nav>
+
+  <nav class="watch-mode-switch" aria-label="Watchlist content mode">
+    <a href="/watchlist?platform={{ selected_platform }}&mode=latest" class="{{ 'is-active' if watch_mode == 'latest' else '' }}">Latest</a>
+    <a href="/watchlist?platform={{ selected_platform }}&mode=breakout" class="{{ 'is-active' if watch_mode == 'breakout' else '' }}">ϟ Breakout</a>
+    <span>{{ 'Showing unusually viral posts from watched platform accounts.' if watch_mode == 'breakout' else 'Showing the newest public content from watched platform accounts.' }}</span>
+  </nav>
+
+  <div class="watch-layout">
+    <section class="content-feed">
+      <div class="section-heading"><div><h2>{{ 'Breakout Content' if watch_mode == 'breakout' else 'Latest Content' }}</h2><p>{{ 'Posts outperforming each account’s recent platform baseline.' if watch_mode == 'breakout' else 'New public content from tracked, platform-specific KOL lists.' }}</p></div><span>{{ content_items|length }} items shown</span></div>
+      <div class="feed-timeline">
+        {% for item in content_items %}
+        <article class="panel feed-card">
+          <span class="timeline-dot"></span>
+          <div class="feed-visual feed-visual--{{ item.visual }}"><span><i class="source-mark source-mark--{{ item.source.tone }}">{{ item.source.mark }}</i>{{ item.type }}</span><b>{{ '▶' if item.type in ('Video', 'Short', 'Reel') else '⌁' }}</b><small>{{ item.metric }}</small></div>
+          <div class="feed-copy">
+            <header><i class="kol-avatar kol-avatar--{{ ('violet', 'amber', 'blue', 'rose', 'mint')[loop.index0 % 5] }}">{{ item.author[:2]|upper }}</i><span><strong>{{ item.author }}</strong><small>{{ item.handle }}</small></span></header>
+            <h3>{{ item.title }}</h3>
+            <p>{{ item.body }}</p>
+            <footer><span class="topic-chip">{{ item.type }}</span><span>{{ item.source.name }} · Public</span><a href="{{ item.url or '#' }}" {% if item.url %}target="_blank" rel="noreferrer"{% endif %}>View source ↗</a></footer>
+          </div>
+          <div class="feed-status">
+            <strong>{{ item.published }}</strong><small>{{ item.retrieved }}</small>
+            {% if watch_mode == 'breakout' %}
+            <span class="watch-breakout-label">◎ Watched KOL breakout</span>
+            <strong class="breakout-score">{{ item.breakout_score }} <small>Breakout score</small></strong>
+            <span class="watch-velocity">{{ item.velocity }} acceleration</span>
+            <a href="/hot-content?source=following&platform={{ item.platform }}">Open in Hot Content →</a>
+            {% else %}
+            {% if item.trend %}<span>↗ Trend match</span><b>{{ item.trend }}</b>{% else %}<span>Live public content</span><b>{{ item.provider }}</b>{% endif %}
+            {% endif %}
+          </div>
+        </article>
+        {% else %}
+        <div class="panel panel-empty">{{ x_live_empty_reason or ("No live X watchlist content is available." if selected_platform == "x" else "No mock content is available for this platform.") }}</div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <aside class="watch-aside">
+      {% if watch_mode == 'breakout' %}
+      <section class="panel breakout-alerts">
+        <div class="subsection-heading"><h2>Breakout alerts</h2><a href="/hot-content?source=following&platform={{ selected_platform }}">View all</a></div>
+        <ol>{% for title, summary in breakout_alerts %}<li><i>{{ loop.index }}</i><span><strong>{{ title }}</strong><p>{{ summary }}</p></span></li>{% endfor %}</ol>
+        <a href="/hot-content?source=following&platform={{ selected_platform }}">Open in Hot Content →</a>
+      </section>
+      {% else %}
+      <section class="panel daily-brief">
+        <div class="subsection-heading"><h2>☀ Daily Brief</h2><small>Today</small></div>
+        <ol>{% for title, summary in daily_brief %}<li><i>{{ loop.index }}</i><span><strong>{{ title }}</strong><p>{{ summary }}</p></span></li>{% endfor %}</ol>
+        <a href="#">View full daily brief →</a>
+      </section>
+      {% endif %}
+
+      <section class="panel connection-card">
+        <div class="subsection-heading"><h2>⌁ Trend connections</h2><a href="/trends">View all trends</a></div>
+        {% for title, velocity, count in trend_connections %}
+        <article><i>↗</i><span><strong>{{ title }}</strong><small>Rising · <b>{{ velocity }}</b></small></span><em>{{ count }} ›</em></article>
+        {% endfor %}
+      </section>
+
+      <section class="panel source-health">
+        <div class="subsection-heading"><h2>Source health</h2><small>Last synced</small></div>
+        {% for platform_id, name, synced, status in source_health %}
+        <p><i class="source-mark source-mark--{{ platform_map[platform_id].tone }}">{{ platform_map[platform_id].mark }}</i><strong>{{ name }}</strong><span class="health-dot health-dot--{{ status }}">{{ '●' if status == 'healthy' else '▲' }}</span><small>{{ synced }}</small></p>
+        {% endfor %}
+      </section>
+    </aside>
+  </div>
+</div>

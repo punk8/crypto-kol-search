@@ -3,17 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Crypto KOL Search{% endblock %}</title>
+  <title>{% block title %}Trend & KOL Discover{% endblock %}</title>
   <link rel="icon" href="/static/avatar.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
   {% block head_extra %}{% endblock %}
   <script defer src="/static/htmx-lite.js"></script>
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
+  {% block app_header %}
   <header class="topbar">
-    <a class="brand" href="/">KOL Growth OS</a>
-    <nav><a href="/">平台中心</a><a href="/settings/brand" aria-label="配置" title="配置">配置</a></nav>
+    <a class="brand" href="/">Trend / KOL</a>
+    <nav><a href="/#trends">趋势</a><a href="/#kols">KOL</a><a href="/platforms">数据源</a></nav>
   </header>
-  <main class="container">{% block content %}{% endblock %}</main>
+  {% endblock %}
+  <main class="{% block main_class %}container{% endblock %}">{% block content %}{% endblock %}</main>
 </body>
 </html>

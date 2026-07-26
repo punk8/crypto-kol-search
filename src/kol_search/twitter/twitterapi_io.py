@@ -3,11 +3,11 @@ from __future__ import annotations
 from math import ceil
 import time
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 
 import httpx
 
-from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTrend, XTweet
 from kol_search.twitter.base import TwitterBackendError
 from kol_search.twitter.third_party import _parse_tweet, _parse_user
 
@@ -23,6 +23,8 @@ class TwitterApiIoClient:
         user_timeline=True,
         followings=True,
         verified_followers=True,
+        trends=True,
+        post_lookup=True,
         # The free tier is limited to one request every five seconds. Expose a
         # single documented page to the pipeline; callers may still request
         # more explicitly and this client will paginate safely.
@@ -38,6 +40,7 @@ class TwitterApiIoClient:
         api_key: str,
         base_url: str = "https://api.twitterapi.io",
         timeout: float = 30.0,
+        trend_woeid: int = 1,
     ) -> None:
         if not api_key:
             raise TwitterBackendError(
@@ -47,6 +50,7 @@ class TwitterApiIoClient:
         self._base = base_url.rstrip("/") + "/"
         self._last_request_started = 0.0
         self._min_interval_seconds = 0.0
+        self._trend_woeid = max(1, int(trend_woeid))
         self._client = httpx.Client(
             headers={
                 "X-API-Key": api_key,
@@ -158,12 +162,16 @@ class TwitterApiIoClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         # The provider currently recommends time-windowed queries instead of
         # cursor pagination for advanced search, so fetch one page intentionally.
+        effective_query = query
+        if start_time:
+            effective_query = f"{query} since:{start_time[:10]}"
         payload = self._get(
             "twitter/tweet/advanced_search",
-            params={"query": query, "queryType": "Latest"},
+            params={"query": effective_query, "queryType": "Latest"},
         )
         tweets = payload.get("tweets") or []
         if not isinstance(tweets, list):
@@ -193,6 +201,7 @@ class TwitterApiIoClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         target = max(1, min(max_results, 100))
         cursor = ""
@@ -231,6 +240,64 @@ class TwitterApiIoClient:
             seen_cursors.add(next_cursor)
             cursor = next_cursor
         return output[:target]
+
+    def get_tweet(self, tweet_id: str) -> XTweet | None:
+        payload = self._get(
+            "twitter/tweets",
+            params={"tweet_ids": str(tweet_id)},
+        )
+        tweets = payload.get("tweets") or []
+        if not isinstance(tweets, list) or not tweets:
+            return None
+        item = tweets[0]
+        return _parse_tweet(item) if isinstance(item, dict) else None
+
+    def get_trends(
+        self,
+        max_results: int = 20,
+        *,
+        category: str | None = None,
+        locale: str | None = None,
+    ) -> list[XTrend]:
+        payload = self._get(
+            "twitter/trends",
+            params={
+                "woeid": self._trend_woeid,
+                "count": max(1, min(50, max_results)),
+            },
+        )
+        values = payload.get("trends") or payload.get("data") or []
+        if isinstance(values, dict):
+            values = values.get("trends") or []
+        output: list[XTrend] = []
+        for fallback_rank, item in enumerate(values, 1):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("trend_name") or "").strip()
+            if not name:
+                continue
+            target = item.get("target") or {}
+            query = target.get("query") if isinstance(target, dict) else None
+            output.append(
+                XTrend(
+                    name=name,
+                    rank=max(1, int(item.get("rank") or fallback_rank)),
+                    post_count=max(
+                        0,
+                        int(item.get("tweet_count") or item.get("post_count") or 0),
+                    ),
+                    url=(
+                        f"https://x.com/search?q={quote_plus(str(query or name))}"
+                    ),
+                    raw={
+                        "source_provider": self.name,
+                        "woeid": self._trend_woeid,
+                        "context": item.get("meta_description"),
+                        **item,
+                    },
+                )
+            )
+        return output[:max_results]
 
     def get_followings(self, username: str, max_results: int = 20) -> list[XAccount]:
         target = max(1, min(max_results, 1000))

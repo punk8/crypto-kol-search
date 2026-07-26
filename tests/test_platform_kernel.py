@@ -163,7 +163,7 @@ def test_registry_health_isolates_platform_failures():
         registry.register(_video_plugin())
 
 
-def test_default_registry_registers_x_and_xiaohongshu_without_connecting():
+def test_default_registry_enables_x_and_allows_explicit_xiaohongshu_registration():
     settings = SimpleNamespace(
         signal_interval_minutes=15,
         comment_hourly_limit=3,
@@ -175,19 +175,25 @@ def test_default_registry_registers_x_and_xiaohongshu_without_connecting():
 
     registry = build_default_registry(settings)
 
-    assert registry.platform_ids == ("x", "xiaohongshu")
+    assert registry.platform_ids == ("x",)
     assert registry.require("x").manifest.default_scan_interval_seconds == 15 * 60
     assert registry.supports("x", PlatformCapability.OWNED_PUBLISH)
-    assert not registry.supports("xiaohongshu", PlatformCapability.OWNED_PUBLISH)
     assert registry.require("x").native_models["tweet"].__name__ == "XTweet"
-    assert registry.require("xiaohongshu").native_models["note"].__name__ == "XiaohongshuNote"
 
     settings.x_signal_interval_minutes = 5
+    settings.enabled_platforms = "x,xiaohongshu"
     overridden_registry = build_default_registry(settings)
     assert overridden_registry.require("x").manifest.default_scan_interval_seconds == 5 * 60
     assert (
         overridden_registry.require("xiaohongshu").manifest.default_scan_interval_seconds
         == 15 * 60
+    )
+    assert not overridden_registry.supports(
+        "xiaohongshu", PlatformCapability.OWNED_PUBLISH
+    )
+    assert (
+        overridden_registry.require("xiaohongshu").native_models["note"].__name__
+        == "XiaohongshuNote"
     )
 
     settings.enabled_platforms = "xiaohongshu"
@@ -204,8 +210,6 @@ def test_platform_public_api_does_not_export_legacy_account_post_reader_contract
 
 def test_builtin_plugins_construct_their_own_read_providers(monkeypatch):
     x_factory_calls: list[tuple[object, object]] = []
-    xhs_factory_calls: list[dict[str, object]] = []
-
     class XClient:
         name = "factory-test"
 
@@ -227,10 +231,7 @@ def test_builtin_plugins_construct_their_own_read_providers(monkeypatch):
         return XClient()
 
     class XiaohongshuProvider:
-        provider = "opencli-test"
-
-        def __init__(self, **kwargs):  # noqa: ANN003, ANN204
-            xhs_factory_calls.append(kwargs)
+        provider = "http-test"
 
         def search_posts(self, _query, _limit):  # noqa: ANN001, ANN202
             return [
@@ -245,20 +246,13 @@ def test_builtin_plugins_construct_their_own_read_providers(monkeypatch):
         "kol_search.twitter.factory.create_x_read_provider",
         create_x_client,
     )
-    monkeypatch.setattr(
-        "kol_search.platforms.opencli.OpenCliXiaohongshuReader",
-        XiaohongshuProvider,
-    )
-    settings = SimpleNamespace(
-        twitter_backend="mock",
-        opencli_command="opencli-test",
-        xiaohongshu_opencli_profile="xhs-test",
-        opencli_timeout_seconds=12.0,
-    )
+    settings = SimpleNamespace(twitter_backend="mock")
     x_result = PlatformRegistry([create_x_plugin(settings)]).dispatch(
         "x", "discover", payload={"query": "RWA"}
     )
-    xhs_result = PlatformRegistry([create_xiaohongshu_plugin(settings)]).dispatch(
+    xhs_result = PlatformRegistry(
+        [create_xiaohongshu_plugin(settings, provider_factory=XiaohongshuProvider)]
+    ).dispatch(
         "xiaohongshu", "discover", payload={"query": "RWA"}
     )
 
@@ -269,9 +263,15 @@ def test_builtin_plugins_construct_their_own_read_providers(monkeypatch):
     assert [type(item).__name__ for item in xhs_result.items] == [
         "XiaohongshuNote"
     ]
-    assert xhs_factory_calls == [
-        {"command": "opencli-test", "profile": "xhs-test", "timeout": 12.0}
-    ]
+
+
+def test_xiaohongshu_without_http_provider_reports_unavailable():
+    plugin = create_xiaohongshu_plugin(SimpleNamespace())
+
+    health = plugin.health_check()
+
+    assert health.ready is False
+    assert health.detail == "HTTP API provider is not configured"
 
 
 def test_x_discovery_reports_total_provider_failure_but_keeps_partial_success():

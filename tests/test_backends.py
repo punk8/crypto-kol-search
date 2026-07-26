@@ -1,21 +1,16 @@
-import json
 import subprocess
 from unittest.mock import patch
 
 import httpx
 import pytest
 
-from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
 from kol_search.settings import Settings
 from kol_search.twitter.base import TwitterBackendError
-from kol_search.twitter.failover import FailoverTwitterClient
 from kol_search.twitter.factory import create_x_read_provider
 from kol_search.twitter.mock import MockTwitterClient
-from kol_search.twitter.official import _parse_account, _parse_post
-from kol_search.twitter.opencli import OpenCliTwitterClient
+from kol_search.twitter.official import API_BASE, OfficialTwitterClient, _parse_account, _parse_post
 from kol_search.twitter.third_party import ThirdPartyTwitterClient
 from kol_search.twitter.twitterapi_io import TwitterApiIoClient
-from kol_search.platforms.opencli import OpenCliXiaohongshuReader
 
 
 def test_official_parser_preserves_entities_and_metrics():
@@ -30,6 +25,7 @@ def test_official_parser_preserves_entities_and_metrics():
         "public_metrics": {"followers_count": 123, "following_count": 4, "tweet_count": 5, "listed_count": 6},
     })
     assert account.followers_count == 123
+    assert account.source_provider == "official"
     assert account.listed_count == 6
     assert account.entities["url"]["urls"][0]["expanded_url"] == "https://example.org"
 
@@ -58,6 +54,61 @@ def test_official_parser_preserves_entities_and_metrics():
     assert post.reference_type == "replied_to"
     assert post.view_count == 100
     assert post.bookmark_count == 4
+    assert post.source_provider == "official"
+
+
+def test_official_client_reads_trends_and_applies_incremental_time_filters():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/2/trends/by/woeid/23424977":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"trend_name": "#AI", "tweet_count": 250000},
+                        {"trend_name": "Bitcoin", "tweet_count": 180000},
+                    ]
+                },
+            )
+        if request.url.path == "/2/tweets/search/recent":
+            return httpx.Response(200, json={"data": []})
+        if request.url.path == "/2/users/123/tweets":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404, json={"detail": "unexpected path"})
+
+    client = OfficialTwitterClient("test-token", trend_woeid=23424977)
+    client._client.close()
+    client._client = httpx.Client(  # noqa: SLF001
+        base_url=API_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        trends = client.get_trends(2)
+        client.search_tweets(
+            "#AI",
+            max_results=10,
+            start_time="2026-07-22T10:00:00Z",
+        )
+        client.get_user_tweets(
+            "123",
+            max_results=5,
+            username="alice",
+            start_time="2026-07-22T11:00:00Z",
+        )
+    finally:
+        client.close()
+
+    assert client.capabilities.trends is True
+    assert [(trend.name, trend.rank, trend.post_count) for trend in trends] == [
+        ("#AI", 1, 250000),
+        ("Bitcoin", 2, 180000),
+    ]
+    assert trends[0].raw["source_provider"] == "official"
+    assert requests[0].url.params["max_trends"] == "2"
+    assert requests[1].url.params["start_time"] == "2026-07-22T10:00:00Z"
+    assert requests[2].url.params["start_time"] == "2026-07-22T11:00:00Z"
 
 
 def test_third_party_user_search_is_explicit_capability():
@@ -77,6 +128,30 @@ def test_twitterapi_io_key_alias_and_readiness():
     settings = Settings(_env_file=None, API_KEY="test-key", TWITTER_BACKEND="twitterapi_io")
     assert settings.twitterapi_io_api_key == "test-key"
     assert settings.backend_ready("twitterapi_io") == (True, None)
+
+
+def test_getxapi_key_and_provider_chain_readiness():
+    settings = Settings(
+        _env_file=None,
+        GET_X_API_KEY="test-key",
+        KOL_X_PROVIDER_CHAIN="getxapi,fxembed",
+    )
+    assert settings.get_x_api_key == "test-key"
+    assert settings.backend_ready("getxapi") == (True, None)
+    assert settings.x_provider_names() == ("getxapi", "fxembed")
+
+
+def test_default_x_chain_and_budget_are_starter_safe():
+    settings = Settings(_env_file=None)
+
+    assert settings.x_provider_names() == ("fxembed", "getxapi")
+    assert settings.get_x_api_daily_call_limit == 120
+    assert settings.get_x_api_min_credits == 0.05
+    assert settings.x_content_cache_seconds == 1800
+    assert settings.x_kol_discovery_cache_seconds == 3600
+    assert settings.x_kol_discovery_limit == 8
+    assert settings.x_kol_candidate_sample_size == 20
+    assert settings.x_kol_recent_posts_per_account == 2
 
 
 def test_official_token_can_be_loaded_from_keychain():
@@ -119,61 +194,6 @@ def test_mock_backend_preserves_content_timestamps_across_client_restarts():
     assert {post.id: post.created_at for post in first_posts} == {
         post.id: post.created_at for post in second_posts
     }
-
-
-def test_xiaohongshu_reader_marks_missing_native_author_id_as_unresolved():
-    def runner(command, **_kwargs):  # noqa: ANN001, ANN202
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(
-                [
-                    {
-                        "title": "RWA note",
-                        "author": "Alice",
-                        "url": "https://www.xiaohongshu.com/explore/note-1",
-                    }
-                ]
-            ),
-            stderr="",
-        )
-
-    reader = OpenCliXiaohongshuReader(
-        command="/test/opencli", profile="test-profile", runner=runner
-    )
-    post = reader.search_posts("RWA", limit=1)[0]
-
-    assert post["author_id"].startswith("xiaohongshu:unresolved:")
-    assert post["author_native_id_resolved"] is False
-
-
-def test_xiaohongshu_reader_resolves_native_author_id_from_profile_url():
-    def runner(command, **_kwargs):  # noqa: ANN001, ANN202
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(
-                [
-                    {
-                        "title": "RWA note",
-                        "author": "Alice",
-                        "author_url": (
-                            "https://www.xiaohongshu.com/user/profile/native-user-1"
-                        ),
-                        "url": "https://www.xiaohongshu.com/explore/note-1",
-                    }
-                ]
-            ),
-            stderr="",
-        )
-
-    reader = OpenCliXiaohongshuReader(
-        command="/test/opencli", profile="test-profile", runner=runner
-    )
-    post = reader.search_posts("RWA", limit=1)[0]
-
-    assert post["author_id"] == "xiaohongshu:native-user-1"
-    assert post["author_native_id_resolved"] is True
 
 
 def test_twitterapi_io_normalizes_users_posts_and_pagination():
@@ -336,245 +356,3 @@ def test_twitterapi_io_retries_free_tier_rate_limit():
     assert calls == 2
     assert account is not None
     assert account.username == "alice"
-
-
-def test_opencli_backend_maps_read_only_commands():
-    calls: list[list[str]] = []
-
-    def runner(command, **kwargs):
-        calls.append(command)
-        operation = command[4]
-        if operation == "search":
-            payload = [{
-                "id": "t1", "author": "alice", "bio": "DeFi researcher",
-                "text": "hello @bob", "likes": 7, "views": 100,
-                "created_at": "Wed Jul 01 00:00:00 +0000 2026",
-            }]
-        elif operation == "profile":
-            payload = [{
-                "screen_name": "alice",
-                "name": "Alice", "bio": "DeFi researcher",
-                "followers": 1234, "following": 50, "tweets": 99,
-                "verified": True, "url": "https://alice.example",
-            }]
-        elif operation == "tweets":
-            payload = [{
-                "id": "t2", "author": "alice", "text": "latest",
-                "likes": 3, "retweets": 2, "replies": 1,
-            }]
-        elif operation == "following":
-            payload = [{
-                "screen_name": "carol", "name": "Carol", "bio": "Onchain", "followers": 50
-            }]
-        elif operation == "trending":
-            payload = [{"name": "DeFi", "rank": 1, "post_count": 12000}]
-        else:
-            raise AssertionError(operation)
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
-
-    client = OpenCliTwitterClient(
-        command="/usr/bin/true",
-        profile="ddd",
-        runner=runner,
-        resolve_account_id=lambda username, proposed: "1" if username == "alice" else proposed,
-    )
-    posts = client.search_tweets("defi", max_results=1)
-    account = client.get_user_by_username("alice")
-    timeline = client.get_user_tweets("1", max_results=1, username="alice")
-    followings = client.get_followings("alice", max_results=1)
-    trends = client.get_trends(max_results=1)
-
-    assert posts[0].author_id == "1"
-    assert posts[0].created_at == "2026-07-01T00:00:00+00:00"
-    assert posts[0].mentioned_usernames == ["bob"]
-    assert account and account.id == "1" and account.followers_count == 1234
-    assert timeline[0].engagement == 6
-    assert followings[0].id == "opencli:carol"
-    assert trends[0].name == "DeFi"
-    assert all(command[1:3] == ["--profile", "ddd"] for command in calls)
-    assert calls[0][3:9] == [
-        "twitter", "search", "defi", "--product", "live", "--limit"
-    ]
-    assert ["profile", "alice"] == calls[1][4:6]
-    assert ["tweets", "alice", "--limit", "1"] == calls[2][4:8]
-    assert ["following", "alice"] == calls[3][4:6]
-
-
-def test_opencli_profile_batch_keeps_partial_real_results():
-    def runner(command, **kwargs):
-        handle = command[5]
-        if handle == "bob":
-            return subprocess.CompletedProcess(
-                command,
-                1,
-                stdout="",
-                stderr="Detached while handling command.",
-            )
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps([{"screen_name": handle, "followers": 100}]),
-            stderr="",
-        )
-
-    client = OpenCliTwitterClient(
-        command="/usr/bin/true",
-        profile="ddd",
-        runner=runner,
-    )
-    accounts = client.get_users_by_usernames(["alice", "bob"])
-
-    assert [account.username for account in accounts] == ["alice"]
-    assert any("@bob" in warning for warning in client.warnings)
-
-
-def test_opencli_user_search_bounds_profile_hydration_before_requests():
-    calls = []
-
-    def runner(command, **kwargs):
-        calls.append(command)
-        operation = command[4]
-        if operation == "search":
-            payload = [
-                {"id": f"t{index}", "author": f"user{index}", "text": "DeFi"}
-                for index in range(8)
-            ]
-        elif operation == "profile":
-            handle = command[5]
-            payload = [{"screen_name": handle, "followers": 100}]
-        else:
-            raise AssertionError(operation)
-        return subprocess.CompletedProcess(
-            command, 0, stdout=json.dumps(payload), stderr=""
-        )
-
-    client = OpenCliTwitterClient(
-        command="/usr/bin/true",
-        profile="ddd",
-        runner=runner,
-    )
-    accounts = client.search_users("defi", max_results=2)
-
-    assert [account.username for account in accounts] == ["user0", "user1"]
-    assert [command[4] for command in calls] == ["search", "profile", "profile"]
-
-
-def test_failover_is_sticky_and_preserves_diagnostics():
-    class Client:
-        capabilities = XReadCapabilities(
-            user_search=True, followings=True, verified_followers=True
-        )
-
-        def __init__(self, name: str, fail: bool = False):
-            self.name = name
-            self.fail = fail
-            self.calls = 0
-
-        def search_users(self, query: str, max_results: int = 100):
-            self.calls += 1
-            if self.fail:
-                raise TwitterBackendError("credits exhausted", status_code=402)
-            return [XAccount(id="1", username="alice")]
-
-        def get_verified_followers(
-            self, user_id: str, max_results: int = 20, *, username=None
-        ):
-            self.calls += 1
-            return []
-
-        def close(self):
-            return None
-
-    primary = Client("twitterapi_io", fail=True)
-    fallback = Client("opencli")
-    fallback.capabilities = XReadCapabilities(user_search=True, verified_followers=False)
-    client = FailoverTwitterClient(primary, fallback)
-
-    assert client.search_users("defi")[0].username == "alice"
-    assert client.search_users("bitcoin")[0].username == "alice"
-    assert client.get_verified_followers("1", username="alice") == []
-    assert primary.calls == 1
-    assert fallback.calls == 2
-    assert client.diagnostics["active_backend"] == "opencli"
-    assert client.diagnostics["fallback_count"] == 1
-    assert any("verified followers" in warning for warning in client.warnings)
-
-    # Sticky failover is scoped to one core platform job, not the whole process.
-    primary.fail = False
-    client.begin_run()
-    assert client.search_users("rwa")[0].username == "alice"
-    assert primary.calls == 2
-    assert client.diagnostics["active_backend"] == "twitterapi_io"
-    assert client.diagnostics["fallback_count"] == 0
-    assert client.warnings == []
-
-
-def test_failover_does_not_hide_bad_request():
-    class Primary:
-        name = "twitterapi_io"
-        capabilities = XReadCapabilities()
-
-        def search_users(self, query: str, max_results: int = 100):
-            raise TwitterBackendError("bad query", status_code=400)
-
-        def close(self):
-            return None
-
-    class Fallback:
-        name = "opencli"
-        capabilities = XReadCapabilities()
-
-        def search_users(self, query: str, max_results: int = 100):
-            raise AssertionError("must not fallback")
-
-        def close(self):
-            return None
-
-    client = FailoverTwitterClient(Primary(), Fallback())
-    with pytest.raises(TwitterBackendError):
-        client.search_users("bad")
-
-
-def test_failover_routes_opencli_account_timelines_to_opencli():
-    class Primary:
-        name = "official"
-        capabilities = XReadCapabilities(user_timeline=True)
-
-        def get_user_tweets(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-            raise AssertionError("OpenCLI identities are not valid official X user IDs")
-
-        def close(self):
-            return None
-
-    class Fallback:
-        name = "opencli"
-        capabilities = XReadCapabilities(user_timeline=True)
-
-        def __init__(self):
-            self.calls = []
-
-        def get_user_tweets(
-            self,
-            user_id: str,
-            max_results: int = 10,
-            *,
-            username: str | None = None,
-            include_replies: bool = False,
-        ):
-            self.calls.append((user_id, max_results, username, include_replies))
-            return [XTweet(id="tweet-1", author_id=user_id, author_username=username)]
-
-        def close(self):
-            return None
-
-    fallback = Fallback()
-    client = FailoverTwitterClient(Primary(), fallback)
-
-    tweets = client.get_user_tweets(
-        "opencli:alice", max_results=5, username="alice", include_replies=True
-    )
-
-    assert [tweet.id for tweet in tweets] == ["tweet-1"]
-    assert fallback.calls == [("opencli:alice", 5, "alice", True)]
-    assert client.diagnostics["backend_calls"] == {"official": 0, "opencli": 1}
-    assert client.diagnostics["active_backend"] == "official"

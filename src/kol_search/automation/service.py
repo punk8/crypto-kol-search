@@ -363,6 +363,49 @@ class PlatformAutomationService:
             idempotency_key=_key("signals", platform_id, bucket),
         )
 
+    def enqueue_trend_discovery(
+        self,
+        platform_id: str,
+        *,
+        limit: int = 20,
+    ) -> int:
+        """Create a read-only native trend scan initiated by a web request."""
+
+        self.registry.require(platform_id)
+        if not self.registry.supports(platform_id, PlatformCapability.NATIVE_TRENDS):
+            raise ValueError(f"Platform {platform_id} does not support native trends")
+        if not self.registry.has_handler(platform_id, PlatformTaskName.SCAN_SIGNALS):
+            raise ValueError(f"Platform {platform_id} does not support trend scanning")
+        bucket = _now().strftime("%Y%m%d%H%M%S%f")
+        return self.automation.create_job(
+            CoreJobType.SIGNAL_REFRESH,
+            platform_id,
+            priority=80,
+            payload={
+                "limit": max(1, min(limit, 100)),
+                "include_trends": True,
+                "include_comments": False,
+                "trends_only": True,
+            },
+            idempotency_key=_key("trends", platform_id, bucket),
+        )
+
+    def execute_job_now(self, job_id: int) -> dict[str, Any]:
+        """Run one queued read job inside the initiating request."""
+
+        current = self.automation.get_job(job_id)
+        if not current:
+            raise KeyError(job_id)
+        if current["status"] == "succeeded":
+            return current
+        claimed = self.automation.claim_job(job_id, "web-request")
+        if not claimed:
+            raise ValueError(f"Job {job_id} is not available for execution")
+        self.run_job(claimed)
+        completed = self.automation.get_job(job_id)
+        assert completed is not None
+        return completed
+
     def enqueue_action_dispatch(self, platform_id: str) -> int:
         plugin = self.registry.require(platform_id)
         write_capabilities = {
@@ -654,7 +697,10 @@ class PlatformAutomationService:
                 receipt_url=result.receipt_url,
                 receipt=receipt,
                 error=result.error,
-                pause_connection=not result.success or not result.confirmed,
+                pause_connection=(
+                    not action.get("agent_id")
+                    and (not result.success or not result.confirmed)
+                ),
                 pause_reason=result.error or "unconfirmed platform write",
             )
         except Exception as exc:
@@ -663,7 +709,7 @@ class PlatformAutomationService:
                 success=False,
                 confirmed=False,
                 error=str(exc),
-                pause_connection=True,
+                pause_connection=not bool(action.get("agent_id")),
                 pause_reason=str(exc),
             )
         return True
@@ -837,6 +883,11 @@ class PlatformAutomationService:
 
     def _signal_payload(self, platform_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         payload["brand"] = self.automation.get_brand_config()
+        if payload.get("trends_only"):
+            payload["account_external_ids"] = []
+            payload["account_targets"] = []
+            payload["next_target_cursor"] = None
+            return payload
         previous_target_cursor = self._previous_job_result_value(
             platform_id, {CoreJobType.SIGNAL_REFRESH}, "target_cursor"
         )
@@ -852,7 +903,7 @@ class PlatformAutomationService:
         )
         payload["account_external_ids"] = [row["id"] for row in active]
         # Preserve the platform-owned scan-target projection for adapters that
-        # need a native handle as well as the stable ID (for example OpenCLI X).
+        # Some providers need a native handle as well as the stable account ID.
         # The core does not interpret any target fields beyond the stable ID.
         payload["account_targets"] = [dict(row) for row in active]
         payload["next_target_cursor"] = next_cursor
@@ -1472,13 +1523,26 @@ class PlatformAutomationScheduler:
         service: PlatformAutomationService,
         worker: AutomationWorker,
         settings: Settings,
+        agent_runtime: Any | None = None,
     ) -> None:
         self.service = service
         self.worker = worker
         self.settings = settings
+        self.agent_runtime = agent_runtime
         self.scheduler = BackgroundScheduler(timezone=settings.timezone)
 
     def start(self) -> None:
+        if self.agent_runtime is not None:
+            self.scheduler.add_job(
+                self.agent_runtime.tick,
+                "interval",
+                minutes=1,
+                id="agent-runtime-tick",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
+            self.agent_runtime.notify_worker("已启动")
         for manifest in self.service.registry.list_manifests():
             platform_id = manifest.platform_id
             if self.service.registry.has_handler(platform_id, PlatformTaskName.DISCOVER):
@@ -1546,6 +1610,8 @@ class PlatformAutomationScheduler:
             self.scheduler.start()
 
     def stop(self) -> None:
+        if self.agent_runtime is not None:
+            self.agent_runtime.notify_worker("已停止")
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
 

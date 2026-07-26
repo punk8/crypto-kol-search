@@ -3,35 +3,25 @@ from __future__ import annotations
 import typer
 
 from kol_search.automation import AutomationStore
-from kol_search.automation.service import (
-    AutomationWorker,
-    PlatformAutomationScheduler,
-    PlatformAutomationService,
-)
+from kol_search.automation.service import PlatformAutomationService
 from kol_search.database_rebuild import rebuild_database
 from kol_search.platforms import build_default_registry, install_registered_platform_schemas
 from kol_search.settings import get_settings
 
 
-app = typer.Typer(help="Multi-platform KOL discovery and governed growth automation")
+app = typer.Typer(help="Multi-platform trend and KOL discovery")
 db_app = typer.Typer(help="Database maintenance commands")
 app.add_typer(db_app, name="db")
 
 
-def _platform_runtime(  # noqa: ANN001, ANN202
-    settings, *, initialize_health: bool = True
-):
+def _platform_runtime(settings):  # noqa: ANN001, ANN202
     database_target = settings.database_target()
     automation = AutomationStore(database_target)
     registry = build_default_registry(settings)
     install_registered_platform_schemas(database_target, registry)
     service = PlatformAutomationService(automation, registry, settings)
-    if initialize_health:
-        service.initialize_connections()
-    else:
-        service.initialize_defaults()
-    worker = AutomationWorker(automation, service)
-    return automation, registry, service, worker
+    service.initialize_connections()
+    return automation, registry, service
 
 
 @app.command()
@@ -52,6 +42,42 @@ def web(
     )
 
 
+@app.command()
+def backend(
+    host: str | None = typer.Option(None, help="Backend bind host; defaults to 127.0.0.1"),
+    port: int | None = typer.Option(None, help="Backend bind port"),
+    reload: bool = typer.Option(False, help="Development auto-reload"),
+) -> None:
+    """Start the standalone authenticated Discover API service."""
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        "kol_search.backend.app:app",
+        host=host or settings.backend_host,
+        port=port or settings.backend_port,
+        reload=reload,
+    )
+
+
+@app.command("backend-scheduler")
+def backend_scheduler(
+    once: bool = typer.Option(False, "--once", help="Run one bounded refresh and exit"),
+) -> None:
+    """Run the server-side multi-domain discovery and Hot Content scheduler."""
+
+    from kol_search.backend.worker import DiscoverWorker
+
+    scheduler = DiscoverWorker(get_settings())
+    if once:
+        try:
+            typer.echo(scheduler.run_once())
+        finally:
+            scheduler.close()
+        return
+    scheduler.run_forever()
+
+
 @app.command("discover")
 def discover(
     query: str = typer.Argument(..., help="Chinese or English KOL topic"),
@@ -65,51 +91,22 @@ def discover(
     ),
 ) -> None:
     """Run platform-native discovery and wait for every selected platform."""
-    import time
-
     settings = get_settings()
     if backend:
         settings = settings.model_copy(update={"twitter_backend": backend})
     selected_platforms = tuple(dict.fromkeys(platform or ["x"]))
-    automation, registry, service, worker = _platform_runtime(settings)
+    _automation, registry, service = _platform_runtime(settings)
     unknown = set(selected_platforms) - set(registry.platform_ids)
     if unknown:
         raise typer.BadParameter(f"Unknown platform: {', '.join(sorted(unknown))}")
-    run_ids = {
-        platform_id: service.enqueue_discovery(
-            platform_id, query=query, limit=limit, manual=True
-        )
-        for platform_id in selected_platforms
-    }
-    worker.start()
-    worker.notify()
     try:
-        while True:
-            rows = {
-                platform_id: automation.get_job(run_id) or {}
-                for platform_id, run_id in run_ids.items()
-            }
-            progress = " · ".join(
-                f"{platform_id} {row.get('progress', 0)}% {row.get('phase', '')}"
-                for platform_id, row in rows.items()
+        for platform_id in selected_platforms:
+            job_id = service.enqueue_discovery(
+                platform_id, query=query, limit=limit, manual=True
             )
-            typer.echo(f"\r{progress}", nl=False)
-            if all(row.get("status") in {"succeeded", "failed", "cancelled"} for row in rows.values()):
-                typer.echo()
-                failures = [
-                    f"{platform_id}: {row.get('error')}"
-                    for platform_id, row in rows.items()
-                    if row.get("status") == "failed"
-                ]
-                for platform_id, row in rows.items():
-                    typer.echo(f"{platform_id} job #{row['id']}: {row.get('result') or {}}")
-                if failures:
-                    typer.echo("; ".join(failures), err=True)
-                    raise typer.Exit(1)
-                return
-            time.sleep(0.5)
+            row = service.execute_job_now(job_id)
+            typer.echo(f"{platform_id} job #{job_id}: {row.get('result') or {}}")
     finally:
-        worker.stop()
         registry.close()
 
 
@@ -118,7 +115,7 @@ def list_platforms() -> None:
     """List registered platforms, declared capabilities, and configured health."""
 
     settings = get_settings()
-    automation, registry, service, _worker = _platform_runtime(settings)
+    automation, registry, _service = _platform_runtime(settings)
     try:
         connections = {
             (row["platform_id"], row["connection_key"]): row
@@ -134,74 +131,21 @@ def list_platforms() -> None:
         registry.close()
 
 
-@app.command("worker")
-def run_worker() -> None:
-    """Run the persistent platform scheduler and Mac execution worker."""
-
-    import threading
-
-    settings = get_settings()
-    automation, registry, service, worker = _platform_runtime(
-        settings, initialize_health=False
-    )
-    scheduler = PlatformAutomationScheduler(service, worker, settings)
-    stopped = threading.Event()
-    try:
-        worker.start()
-        scheduler.start()
-        typer.echo(f"Worker {settings.worker_id} is running; checking platform health")
-        service.initialize_connections()
-        typer.echo("Platform health check complete")
-        while not stopped.wait(30):
-            pass
-    except KeyboardInterrupt:
-        typer.echo("Stopping worker")
-    finally:
-        scheduler.stop()
-        worker.stop()
-        registry.close()
-
-
 @app.command("scan")
 def scan_platform(
     platform: str = typer.Option(..., "--platform", "-p"),
-    wait: bool = typer.Option(
-        True,
-        "--wait/--no-wait",
-        help="Wait for the manual scan to finish (default) or only enqueue it",
-    ),
 ) -> None:
     """Run one platform-native signal scan."""
 
-    import time
-
     settings = get_settings()
-    automation, registry, service, worker = _platform_runtime(settings)
+    _automation, registry, service = _platform_runtime(settings)
     try:
         if platform not in registry:
             raise typer.BadParameter(f"Unknown platform: {platform}")
         job_id = service.enqueue_signal_refresh(platform, manual=True)
-        if not wait:
-            typer.echo(f"Queued {platform} signal job #{job_id}")
-            return
-        worker.start()
-        worker.notify()
-        while True:
-            row = automation.get_job(job_id) or {}
-            typer.echo(
-                f"\r{platform} {row.get('progress', 0)}% {row.get('phase', '')}",
-                nl=False,
-            )
-            if row.get("status") in {"succeeded", "failed", "cancelled"}:
-                typer.echo()
-                if row.get("status") != "succeeded":
-                    typer.echo(str(row.get("error") or row.get("status")), err=True)
-                    raise typer.Exit(1)
-                typer.echo(f"{platform} scan #{job_id}: {row.get('result') or {}}")
-                return
-            time.sleep(0.5)
+        row = service.execute_job_now(job_id)
+        typer.echo(f"{platform} scan #{job_id}: {row.get('result') or {}}")
     finally:
-        worker.stop()
         registry.close()
 
 

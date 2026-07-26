@@ -90,7 +90,7 @@ def _execute(
     )
 
 
-def test_x_platform_schedules_postiz_action_with_confirmed_receipt() -> None:
+def test_x_platform_schedule_waits_for_x_release_url() -> None:
     publisher = RecordingPostiz(create_result=[{"postId": "postiz-scheduled-1"}])
     scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
 
@@ -101,7 +101,8 @@ def test_x_platform_schedules_postiz_action_with_confirmed_receipt() -> None:
     )
 
     assert result.success is True
-    assert result.confirmed is True
+    assert result.confirmed is False
+    assert result.confirmation_required is True
     assert result.external_id == "postiz-scheduled-1"
     assert len(publisher.created) == 1
     call = publisher.created[0]

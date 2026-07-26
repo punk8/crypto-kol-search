@@ -19,7 +19,7 @@ def build_default_registry(
         if callable(configured):
             platforms = configured()
         else:
-            raw = str(getattr(settings, "enabled_platforms", "x,xiaohongshu"))
+            raw = str(getattr(settings, "enabled_platforms", "x"))
             platforms = raw.split(",")
     selected = tuple(dict.fromkeys(value.strip().lower() for value in platforms))
     unknown = set(selected) - {"x", "xiaohongshu"}

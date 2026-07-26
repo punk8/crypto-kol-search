@@ -22,7 +22,6 @@ pytest \
   tests/test_platform_templates.py \
   tests/test_platform_signal_cursors.py \
   tests/test_platform_kol_lifecycle.py \
-  tests/test_platform_browser_actions.py \
   tests/test_platform_native_discovery_risk.py \
   tests/test_content_intelligence.py \
   tests/test_automation_repository.py \
@@ -228,7 +227,7 @@ POSTIZ_API_KEY=<local-only>
 ## 8. 真实连接验收原则
 
 - 运行时禁止启用 Mock 作为真实证据。
-- 每个平台使用独立凭据或 Browser Bridge profile，只保存别名，不保存密码/Cookie。
+- 每个平台使用独立的服务端 HTTP API 凭据，只保存别名，不保存密钥或 Cookie。
 - 每项证据记录平台、原生对象 URL、采集/执行时间、任务或动作 ID、回执和截图。
 - 平台登录异常、验证码、限流或警告不得绕过；暂停该账号通道后，其他平台和只读任务继续。
 - 任何真实写入只面向双方自有沙盒目标，并在测试结束后恢复 `KOL_LIVE_WRITE_ENABLED=false`。

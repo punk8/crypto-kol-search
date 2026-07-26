@@ -54,6 +54,43 @@ CREATE TABLE IF NOT EXISTS x_kols (
 );
 CREATE INDEX IF NOT EXISTS idx_x_kols_status_score ON x_kols(status, score DESC);
 
+CREATE TABLE IF NOT EXISTS x_kol_domain_score_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    domain_key TEXT NOT NULL,
+    domain_query TEXT NOT NULL,
+    score REAL NOT NULL,
+    confidence TEXT NOT NULL,
+    score_version TEXT NOT NULL,
+    components_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    observed_at TEXT NOT NULL,
+    FOREIGN KEY(account_id) REFERENCES x_accounts(id),
+    UNIQUE(account_id, domain_key, observed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_x_kol_domain_scores
+ON x_kol_domain_score_snapshots(domain_key, observed_at DESC, score DESC);
+
+CREATE TABLE IF NOT EXISTS x_kol_domain_memberships (
+    domain_key TEXT NOT NULL,
+    domain_name TEXT NOT NULL,
+    domain_query TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    score REAL NOT NULL DEFAULT 0,
+    confidence TEXT NOT NULL DEFAULT 'Low',
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    consecutive_qualified INTEGER NOT NULL DEFAULT 0,
+    consecutive_missed INTEGER NOT NULL DEFAULT 0,
+    enrolled_at TEXT,
+    last_evaluated_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(domain_key, account_id),
+    FOREIGN KEY(account_id) REFERENCES x_accounts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_x_domain_memberships_status_score
+ON x_kol_domain_memberships(domain_key, status, score DESC);
+
 CREATE TABLE IF NOT EXISTS x_tweets (
     id TEXT PRIMARY KEY,
     author_id TEXT NOT NULL,
@@ -188,6 +225,10 @@ def install_x_schema(connection: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO x_schema_migrations VALUES(5, ?, ?)",
         ("native_trend_tweet_links", _now()),
     )
+    connection.execute(
+        "INSERT OR IGNORE INTO x_schema_migrations VALUES(6, ?, ?)",
+        ("domain_specific_kol_memberships", _now()),
+    )
 
 
 def _ensure_columns(
@@ -210,6 +251,9 @@ class XRepository:
         self.database = NativePlatformDatabase(path)
         if not self.database.is_postgres:
             self.migrate()
+
+    def close(self) -> None:
+        self.database.runtime.close()
 
     def migrate(self) -> None:
         with self.database.transaction() as connection:
@@ -470,6 +514,267 @@ class XRepository:
             )
             if not cursor.rowcount:
                 raise KeyError(account_id)
+
+    def record_domain_score_snapshot(
+        self,
+        *,
+        account_id: str,
+        domain_key: str,
+        domain_query: str,
+        score: float,
+        confidence: str,
+        score_version: str,
+        components: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        observed_at: str,
+    ) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO x_kol_domain_score_snapshots(
+                    account_id, domain_key, domain_query, score, confidence,
+                    score_version, components_json, evidence_json, observed_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_id, domain_key, observed_at) DO UPDATE SET
+                    score=excluded.score,
+                    confidence=excluded.confidence,
+                    score_version=excluded.score_version,
+                    components_json=excluded.components_json,
+                    evidence_json=excluded.evidence_json
+                """,
+                (
+                    account_id,
+                    domain_key,
+                    domain_query,
+                    score,
+                    confidence,
+                    score_version,
+                    json.dumps(components, ensure_ascii=False),
+                    json.dumps(evidence, ensure_ascii=False),
+                    observed_at,
+                ),
+            )
+
+    def evaluate_domain_membership(
+        self,
+        *,
+        domain_key: str,
+        domain_name: str,
+        domain_query: str,
+        account_id: str,
+        score: float,
+        confidence: str,
+        reasons: tuple[str, ...],
+        qualified: bool,
+        qualifying_runs: int,
+        max_active: int,
+    ) -> dict[str, Any]:
+        """Persist one explainable auto-enrollment decision for a domain."""
+
+        now = _now()
+        required = max(1, qualifying_runs)
+        with self.database.transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT status, consecutive_qualified, consecutive_missed, enrolled_at
+                FROM x_kol_domain_memberships
+                WHERE domain_key=? AND account_id=?
+                """,
+                (domain_key, account_id),
+            ).fetchone()
+            previous_status = str(existing["status"]) if existing is not None else "candidate"
+            qualified_runs = (
+                int(existing["consecutive_qualified"]) + 1
+                if qualified and existing is not None
+                else (1 if qualified else 0)
+            )
+            missed_runs = (
+                0
+                if qualified
+                else (
+                    int(existing["consecutive_missed"]) + 1
+                    if existing is not None
+                    else 1
+                )
+            )
+            active_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM x_kol_domain_memberships
+                    WHERE domain_key=? AND status='active' AND account_id<>?
+                    """,
+                    (domain_key, account_id),
+                ).fetchone()["count"]
+            )
+            status = previous_status
+            if qualified and qualified_runs >= required and active_count < max(1, max_active):
+                status = "active"
+            elif previous_status != "active":
+                status = "candidate"
+            elif not qualified and missed_runs >= 3:
+                status = "paused"
+            enrolled_at = (
+                str(existing["enrolled_at"])
+                if existing is not None and existing["enrolled_at"]
+                else (now if status == "active" else None)
+            )
+            connection.execute(
+                """
+                INSERT INTO x_kol_domain_memberships(
+                    domain_key, domain_name, domain_query, account_id, status,
+                    score, confidence, reasons_json, consecutive_qualified,
+                    consecutive_missed, enrolled_at, last_evaluated_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(domain_key, account_id) DO UPDATE SET
+                    domain_name=excluded.domain_name,
+                    domain_query=excluded.domain_query,
+                    status=excluded.status,
+                    score=excluded.score,
+                    confidence=excluded.confidence,
+                    reasons_json=excluded.reasons_json,
+                    consecutive_qualified=excluded.consecutive_qualified,
+                    consecutive_missed=excluded.consecutive_missed,
+                    enrolled_at=COALESCE(x_kol_domain_memberships.enrolled_at, excluded.enrolled_at),
+                    last_evaluated_at=excluded.last_evaluated_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    domain_key,
+                    domain_name,
+                    domain_query,
+                    account_id,
+                    status,
+                    score,
+                    confidence,
+                    json.dumps(reasons, ensure_ascii=False),
+                    qualified_runs,
+                    missed_runs,
+                    enrolled_at,
+                    now,
+                    now,
+                ),
+            )
+            if status == "active":
+                connection.execute(
+                    """
+                    UPDATE x_kols SET status='active', score=?, reasons_json=?,
+                        last_qualified_at=?, updated_at=? WHERE account_id=?
+                    """,
+                    (
+                        score / 100 if score > 1 else score,
+                        json.dumps(
+                            (f"auto-enrolled for {domain_name}", *reasons),
+                            ensure_ascii=False,
+                        ),
+                        now,
+                        now,
+                        account_id,
+                    ),
+                )
+            row = connection.execute(
+                """
+                SELECT * FROM x_kol_domain_memberships
+                WHERE domain_key=? AND account_id=?
+                """,
+                (domain_key, account_id),
+            ).fetchone()
+        output = dict(row)
+        output["reasons"] = json.loads(output.pop("reasons_json") or "[]")
+        return output
+
+    def list_domain_memberships(
+        self,
+        *,
+        domain_key: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if domain_key:
+            clauses.append("m.domain_key=?")
+            params.append(domain_key)
+        if status:
+            clauses.append("m.status=?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(limit, 500)))
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT m.*, a.handle, a.display_name, a.profile_url,
+                       a.followers_count, a.avatar_url
+                FROM x_kol_domain_memberships m
+                JOIN x_accounts a ON a.id=m.account_id
+                {where}
+                ORDER BY m.score DESC, a.followers_count DESC LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        output = [dict(row) for row in rows]
+        for row in output:
+            row["reasons"] = json.loads(row.pop("reasons_json") or "[]")
+        return output
+
+    def ensure_content_author(
+        self,
+        *,
+        account_id: str,
+        handle: str,
+        provider: str,
+    ) -> str:
+        """Insert a sparse content author without overwriting a richer profile."""
+
+        now = _now()
+        normalized_handle = handle.strip().lstrip("@") or account_id
+        with self.database.transaction() as connection:
+            existing = connection.execute(
+                "SELECT id FROM x_accounts WHERE lower(handle)=lower(?) LIMIT 1",
+                (normalized_handle,),
+            ).fetchone()
+            canonical_id = str(existing["id"]) if existing is not None else account_id
+            connection.execute(
+                """
+                INSERT INTO x_accounts(
+                    id, handle, source_provider, captured_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (canonical_id, normalized_handle, provider, now, now),
+            )
+        return canonical_id
+
+    def list_hot_content_observations(
+        self,
+        *,
+        window_hours: int,
+        max_rows: int = 5000,
+    ) -> list[dict[str, Any]]:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=max(1, window_hours))
+        ).isoformat()
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT t.id, t.author_id, t.author_handle, t.text, t.language,
+                       t.created_at, t.conversation_id, t.reference_type,
+                       t.referenced_tweet_id, t.url, t.source_provider,
+                       t.captured_at, a.display_name, a.profile_url,
+                       a.followers_count, COALESCE(k.status, 'candidate') AS kol_status,
+                       m.captured_at AS metric_captured_at,
+                       m.like_count, m.repost_count, m.reply_count,
+                       m.quote_count, m.bookmark_count, m.view_count
+                FROM x_tweets t
+                JOIN x_accounts a ON a.id=t.author_id
+                LEFT JOIN x_kols k ON k.account_id=t.author_id
+                JOIN x_tweet_metrics m ON m.tweet_id=t.id
+                WHERE COALESCE(t.created_at, t.captured_at)>=?
+                ORDER BY t.id ASC, m.captured_at DESC
+                LIMIT ?
+                """,
+                (cutoff, max(100, min(max_rows, 20_000))),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_kol(self, account_id: str) -> dict[str, Any] | None:
         with self.database.transaction() as connection:

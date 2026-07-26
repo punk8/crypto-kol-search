@@ -1,0 +1,130 @@
+<div class="discover-page" id="trends">
+  <header class="page-heading">
+    <div>
+      <p class="page-kicker">LIVE CATEGORY INTELLIGENCE</p>
+      <h1>Trend Radar</h1>
+      <p>See the latest topics observed on X, organized by category and native rank.</p>
+    </div>
+    <div class="heading-actions">
+      <span class="mock-pill"><i></i>{{ data_mode }}</span>
+      <button class="icon-button" type="button" title="Refresh">↻ <span>Live observations</span></button>
+    </div>
+  </header>
+
+  <div class="control-bar" aria-label="Trend filters">
+    <div class="control-field control-field--wide"><span>Category</span><strong>{{ categories|selectattr('id', 'equalto', selected_category)|map(attribute='name')|first }}</strong></div>
+    <div class="control-field"><span>Locale</span><strong>Global</strong></div>
+    <div class="control-field"><span>Time window</span><strong>Last 7 days</strong></div>
+    <div class="semantic-note">ⓘ Native X ranking</div>
+  </div>
+
+  <nav class="filter-tabs" aria-label="Categories">
+    {% for item in categories %}
+    <a href="/trends?category={{ item.id }}" class="{{ 'is-active' if selected_category == item.id else '' }}">{{ item.name }}</a>
+    {% endfor %}
+  </nav>
+
+  <div class="trend-layout">
+    <section class="panel trend-theme-panel">
+      <div class="panel-heading">
+        <div><h2>X trend observations</h2><p>Topics currently present in the public X trend timeline.</p></div>
+        <a href="#native-signals">Native ranking ↓</a>
+      </div>
+      <div class="trend-table-wrap">
+        <table class="trend-table">
+          <thead><tr><th>Topic</th><th>State</th><th>Source</th><th>Evidence</th><th>Observed at</th><th>Last checked</th></tr></thead>
+          <tbody>
+          {% for trend in trend_themes %}
+            <tr class="{{ 'is-selected' if loop.first else '' }}">
+              <td><span class="theme-name"><i class="theme-icon theme-icon--{{ trend.state }}">⌁</i><span><a href="/trends?category={{ selected_category }}&trend={{ trend.id }}#trend-hot-posts"><strong>{{ trend.name }}</strong></a><small>{{ trend.description }}</small></span></span></td>
+              <td><span class="trend-state trend-state--{{ trend.state }}">{{ trend.state_label }}</span></td>
+              <td><span class="coverage-list">
+                {% for source in trend_sources %}
+                <i class="source-mark source-mark--{{ source.tone }} {{ '' if source.id in trend.coverage else 'is-muted' }}" title="{{ source.name }}">{{ source.mark }}</i>
+                {% endfor %}
+              </span></td>
+              <td><span class="sparkline" aria-hidden="true">{% for point in trend.velocity %}<i style="--spark:{{ point }}%"></i>{% endfor %}</span><strong>{{ trend.evidence }}</strong></td>
+              <td>{{ trend.first_seen }}</td><td>{{ trend.last_observed }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6"><div class="panel-empty">No live X trends match this category yet.</div></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="panel evidence-panel">
+      <div class="panel-heading"><div><h2>Evidence timeline</h2><p>Recent public observations from X</p></div></div>
+      <div class="evidence-timeline">
+        {% for item in trend_evidence %}
+        <article>
+          <span class="source-mark source-mark--{{ item.source_meta.tone }}">{{ item.source_meta.mark }}</span>
+          <div><small>{{ item.time }} · {{ item.source_meta.name }}</small><strong>{{ item.title }}</strong><p>{{ item.source }}</p></div>
+          <b>↗</b>
+        </article>
+        {% endfor %}
+      </div>
+    </aside>
+  </div>
+
+  <section class="native-section" id="native-signals">
+    <div class="section-heading"><div><h2>X native signals</h2><p>Current native ranking and available public post counts.</p></div><span>{{ native_signals|length }} active source</span></div>
+    <div class="native-grid">
+      {% for source in native_signals %}
+      <article class="panel native-card">
+        <header><span class="source-mark source-mark--{{ source.tone }}">{{ source.mark }}</span><strong>{{ source.name }}</strong><a href="#">View all</a></header>
+        <div class="native-card-labels"><span>Rank</span><span>Velocity</span></div>
+        <ol>
+          {% for signal in source.signals %}
+          <li><b>{{ signal.rank }}</b><span>{% if signal.url %}<a href="{{ signal.url }}" target="_blank" rel="noreferrer">{{ signal.name }}</a>{% else %}{{ signal.name }}{% endif %}</span><em>{{ signal.velocity }}</em></li>
+          {% endfor %}
+        </ol>
+        <footer>Updated {{ loop.index + 1 }} min ago</footer>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel trend-detail">
+    <div class="trend-detail-summary">
+      <i class="theme-icon theme-icon--{{ selected_trend.state }}">↗</i>
+      <div><span class="trend-state trend-state--{{ selected_trend.state }}">{{ selected_trend.state_label }}</span><h2>{{ selected_trend.name }}</h2><p>{{ selected_trend.description }}</p></div>
+    </div>
+    <div class="trend-facts">
+      <span><small>Category</small><strong>{{ selected_trend.category|upper }}</strong></span>
+      <span><small>First seen</small><strong>{{ selected_trend.first_seen }}</strong></span>
+      <span><small>Last observed</small><strong>{{ selected_trend.last_observed }}</strong></span>
+      <span><small>Evidence (7d)</small><strong>{{ selected_trend.evidence }}</strong></span>
+    </div>
+    <div class="trend-observations">
+      <h3>X observation</h3>
+      {% for source_id in selected_trend.coverage %}
+      <span><i class="source-mark source-mark--{{ platform_map[source_id].tone }}">{{ platform_map[source_id].mark }}</i><strong>{{ platform_map[source_id].name }}</strong><small>Independent observation · {{ loop.index + 1 }} min ago</small></span>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel trend-hot-posts" id="trend-hot-posts">
+    <div class="panel-heading">
+      <div><h2>Hot X posts driving this trend</h2><p>Supporting public posts associated with the selected X topic.</p></div>
+      <a href="/hot-content?source=discover&platform=x">View all in Hot Content →</a>
+    </div>
+    <div class="trend-hot-list">
+      {% for item in trend_hot_posts %}
+      <article data-trend-hot-post>
+        <b>{{ loop.index }}</b>
+        <span class="source-mark source-mark--{{ item.source.tone }}">{{ item.source.mark }}</span>
+        <span class="trend-hot-type">{{ item.type }}</span>
+        <span class="trend-hot-copy"><strong>{{ item.excerpt }}</strong><small>{{ item.author }} · {{ item.handle }}</small></span>
+        <span class="trend-hot-time"><strong>{{ item.published }}</strong><small>{{ item.engagement }}</small></span>
+        <span class="velocity-cell"><strong>{{ item.velocity }}</strong><span class="line-spark" aria-hidden="true">{% for point in item.spark %}<i style="--point:{{ point }}%"></i>{% endfor %}</span></span>
+        <span class="breakout-badge breakout-badge--trend">Trend breakout</span>
+      </article>
+      {% else %}
+      <div class="panel-empty">No supporting X posts are available for this trend yet.</div>
+      {% endfor %}
+    </div>
+    <footer class="trend-hot-footer">Trend order follows the active X data provider; breakout velocity requires stored metric snapshots.</footer>
+  </section>
+</div>

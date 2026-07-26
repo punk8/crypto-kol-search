@@ -7,7 +7,6 @@ end
 $provision$;
 
 alter role kol_app set search_path = kol_search, public;
-grant connect on database postgres to kol_app;
 grant usage on schema kol_search to kol_app;
 grant select, insert, update, delete on all tables in schema kol_search to kol_app;
 grant usage, select, update on all sequences in schema kol_search to kol_app;

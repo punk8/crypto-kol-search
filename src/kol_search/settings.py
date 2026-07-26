@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Literal
@@ -8,8 +7,9 @@ from typing import Literal
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-BackendName = Literal["mock", "official", "third_party", "twitterapi_io", "twscrape", "opencli"]
-RuntimeMode = Literal["combined", "web", "worker"]
+BackendName = Literal[
+    "mock", "official", "third_party", "twitterapi_io", "getxapi", "twscrape", "fxembed"
+]
 
 # Project root: search/
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -23,10 +23,11 @@ class Settings(BaseSettings):
     )
 
     twitter_backend: BackendName = Field(default="twitterapi_io", alias="TWITTER_BACKEND")
-    enable_mock_backend: bool = Field(default=False, alias="KOL_ENABLE_MOCK_BACKEND")
-    enabled_platforms: str = Field(
-        default="x,xiaohongshu", alias="KOL_ENABLED_PLATFORMS"
+    x_provider_chain: str = Field(
+        default="fxembed,getxapi", alias="KOL_X_PROVIDER_CHAIN"
     )
+    enable_mock_backend: bool = Field(default=False, alias="KOL_ENABLE_MOCK_BACKEND")
+    enabled_platforms: str = Field(default="x", alias="KOL_ENABLED_PLATFORMS")
 
     x_bearer_token: str | None = Field(default=None, alias="X_BEARER_TOKEN")
     x_bearer_token_keychain_service: str | None = Field(
@@ -53,21 +54,149 @@ class Settings(BaseSettings):
         alias="TWITTERAPI_IO_BASE_URL",
     )
 
+    get_x_api_key: str | None = Field(default=None, alias="GET_X_API_KEY")
+    get_x_api_base_url: str = Field(
+        default="https://api.getxapi.com", alias="GET_X_API_BASE_URL"
+    )
+    get_x_api_daily_call_limit: int = Field(
+        default=120, ge=1, alias="GET_X_API_DAILY_CALL_LIMIT"
+    )
+    get_x_api_min_credits: float = Field(
+        default=0.05, ge=0, alias="GET_X_API_MIN_CREDITS"
+    )
+    get_x_api_balance_cache_seconds: int = Field(
+        default=300, ge=0, alias="GET_X_API_BALANCE_CACHE_SECONDS"
+    )
+    get_x_api_estimated_credits_per_call: float = Field(
+        default=0.001, ge=0, alias="GET_X_API_ESTIMATED_CREDITS_PER_CALL"
+    )
+
     twscrape_accounts_file: str | None = Field(default=None, alias="TWSCRAPE_ACCOUNTS_FILE")
+    twscrape_accounts_db: str = Field(
+        default="data/twscrape_accounts.db", alias="TWSCRAPE_ACCOUNTS_DB"
+    )
+    twscrape_username: str = Field(default="kol-search-test", alias="TWSCRAPE_USERNAME")
+    twscrape_auth_token: str | None = Field(default=None, alias="TWSCRAPE_AUTH_TOKEN")
+    twscrape_ct0: str | None = Field(default=None, alias="TWSCRAPE_CT0")
+    twscrape_wait_timeout_seconds: float = Field(
+        default=15.0, alias="TWSCRAPE_WAIT_TIMEOUT_SECONDS"
+    )
     enable_twscrape: bool = Field(default=False, alias="ENABLE_TWSCRAPE")
 
-    opencli_command: str = Field(default="opencli", alias="OPENCLI_COMMAND")
-    opencli_profile: str = Field(default="ddd", alias="OPENCLI_PROFILE")
-    xiaohongshu_opencli_profile: str = Field(
-        default="ddd", alias="XIAOHONGSHU_OPENCLI_PROFILE"
+    enable_fxembed: bool = Field(default=True, alias="ENABLE_FXEMBED")
+    fxembed_base_url: str = Field(
+        default="https://api.fxtwitter.com", alias="FXEMBED_BASE_URL"
     )
-    opencli_timeout_seconds: float = Field(default=90.0, alias="OPENCLI_TIMEOUT_SECONDS")
-    twitter_fallback_backend: str | None = Field(
-        default="opencli", alias="TWITTER_FALLBACK_BACKEND"
+    fxembed_timeout_seconds: float = Field(
+        default=20.0, alias="FXEMBED_TIMEOUT_SECONDS"
+    )
+
+    backend_api_token: str | None = Field(default=None, alias="KOL_BACKEND_API_TOKEN")
+    backend_host: str = Field(default="127.0.0.1", alias="KOL_BACKEND_HOST")
+    backend_port: int = Field(default=8780, alias="KOL_BACKEND_PORT")
+    backend_url: str | None = Field(default=None, alias="KOL_BACKEND_URL")
+    backend_request_timeout_seconds: float = Field(
+        default=30.0, alias="KOL_BACKEND_REQUEST_TIMEOUT_SECONDS"
+    )
+    x_hot_content_query: str = Field(
+        default=(
+            "(AI OR crypto OR technology OR startups) min_faves:100 "
+            "-filter:replies lang:en"
+        ),
+        alias="KOL_X_HOT_CONTENT_QUERY",
+    )
+    x_hot_content_limit: int = Field(default=12, alias="KOL_X_HOT_CONTENT_LIMIT")
+    x_watch_handles: str = Field(default="", alias="KOL_X_WATCH_HANDLES")
+    x_watch_posts_per_account: int = Field(
+        default=3, alias="KOL_X_WATCH_POSTS_PER_ACCOUNT"
+    )
+    x_kol_discovery_domain: str = Field(
+        default="AI agents", alias="KOL_X_KOL_DISCOVERY_DOMAIN"
+    )
+    x_kol_discovery_limit: int = Field(
+        default=8, alias="KOL_X_KOL_DISCOVERY_LIMIT"
+    )
+    x_kol_candidate_sample_size: int = Field(
+        default=20, alias="KOL_X_KOL_CANDIDATE_SAMPLE_SIZE"
+    )
+    x_kol_recent_posts_per_account: int = Field(
+        default=2, alias="KOL_X_KOL_RECENT_POSTS_PER_ACCOUNT"
+    )
+    x_kol_min_engagement: int = Field(
+        default=25, alias="KOL_X_KOL_MIN_ENGAGEMENT"
+    )
+    x_kol_discovery_cache_seconds: int = Field(
+        default=3600, alias="KOL_X_KOL_DISCOVERY_CACHE_SECONDS"
+    )
+    x_trend_cache_seconds: int = Field(
+        default=1800, ge=0, alias="KOL_X_TREND_CACHE_SECONDS"
+    )
+    x_content_cache_seconds: int = Field(
+        default=1800, ge=0, alias="KOL_X_CONTENT_CACHE_SECONDS"
+    )
+    x_timeline_cache_seconds: int = Field(
+        default=1800, ge=0, alias="KOL_X_TIMELINE_CACHE_SECONDS"
+    )
+    x_content_lookup_cache_seconds: int = Field(
+        default=3600, ge=0, alias="KOL_X_CONTENT_LOOKUP_CACHE_SECONDS"
+    )
+    x_snapshot_stale_seconds: int = Field(
+        default=86_400, ge=0, alias="KOL_X_SNAPSHOT_STALE_SECONDS"
+    )
+
+    discovery_domains_json: str = Field(
+        default=(
+            '[{"key":"ai","name":"AI","query":"AI agents OR LLM OR '
+            'machine learning"},{"key":"crypto","name":"Crypto","query":"crypto '
+            'OR bitcoin OR ethereum OR DeFi"},{"key":"financial","name":"Financial",'
+            '"query":"financial markets OR investing OR macroeconomics"}]'
+        ),
+        alias="KOL_DISCOVERY_DOMAINS_JSON",
+    )
+    auto_watchlist_enabled: bool = Field(
+        default=True, alias="KOL_AUTO_WATCHLIST_ENABLED"
+    )
+    auto_watchlist_min_score: int = Field(
+        default=75, ge=0, le=100, alias="KOL_AUTO_WATCHLIST_MIN_SCORE"
+    )
+    auto_watchlist_min_evidence: int = Field(
+        default=3, ge=1, le=20, alias="KOL_AUTO_WATCHLIST_MIN_EVIDENCE"
+    )
+    auto_watchlist_qualifying_runs: int = Field(
+        default=2, ge=1, le=10, alias="KOL_AUTO_WATCHLIST_QUALIFYING_RUNS"
+    )
+    auto_watchlist_max_per_domain: int = Field(
+        default=20, ge=1, le=200, alias="KOL_AUTO_WATCHLIST_MAX_PER_DOMAIN"
+    )
+    hot_content_interval_minutes: int = Field(
+        default=30, ge=5, le=1440, alias="KOL_HOT_CONTENT_INTERVAL_MINUTES"
+    )
+    hot_content_window_hours: int = Field(
+        default=48, ge=1, le=168, alias="KOL_HOT_CONTENT_WINDOW_HOURS"
+    )
+    hot_content_min_engagement: int = Field(
+        default=100, ge=0, alias="KOL_HOT_CONTENT_MIN_ENGAGEMENT"
+    )
+    hot_following_min_engagement: int = Field(
+        default=20, ge=0, alias="KOL_HOT_FOLLOWING_MIN_ENGAGEMENT"
     )
 
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5.6-luna", alias="OPENAI_MODEL")
+    deep_seek_api_key: str | None = Field(default=None, alias="DEEP_SEEK_API_KEY")
+    deep_seek_base_url: str = Field(
+        default="https://api.deepseek.com", alias="DEEP_SEEK_BASE_URL"
+    )
+    deep_seek_model: str = Field(default="deepseek-chat", alias="DEEP_SEEK_MODEL")
+    deep_seek_timeout_seconds: float = Field(
+        default=30.0, ge=1.0, le=120.0, alias="DEEP_SEEK_TIMEOUT_SECONDS"
+    )
+    reply_draft_daily_limit: int = Field(
+        default=50, ge=1, le=1000, alias="KOL_REPLY_DRAFT_DAILY_LIMIT"
+    )
+    reply_draft_cache_seconds: int = Field(
+        default=600, ge=0, le=86_400, alias="KOL_REPLY_DRAFT_CACHE_SECONDS"
+    )
 
     web_host: str = Field(default="127.0.0.1", alias="KOL_WEB_HOST")
     web_port: int = Field(default=8765, alias="KOL_WEB_PORT")
@@ -82,6 +211,7 @@ class Settings(BaseSettings):
     )
     x_trends_per_scan: int = Field(default=5, alias="KOL_X_TRENDS_PER_SCAN")
     x_tweets_per_trend: int = Field(default=10, alias="KOL_X_TWEETS_PER_TREND")
+    x_trend_woeid: int = Field(default=1, alias="KOL_X_TREND_WOEID")
     signal_posts_per_account: int = Field(default=20, alias="KOL_SIGNAL_POSTS_PER_ACCOUNT")
     signal_reply_limit: int = Field(default=20, alias="KOL_SIGNAL_REPLY_LIMIT")
     platform_account_batch_size: int = Field(
@@ -131,12 +261,14 @@ class Settings(BaseSettings):
 
     kol_db_path: str = Field(default="data/kol_search.db", alias="KOL_DB_PATH")
     database_url: str | None = Field(default=None, alias="KOL_DATABASE_URL")
+    provider_state_db_path: Path | None = Field(
+        default=None, alias="KOL_PROVIDER_STATE_DB_PATH"
+    )
     database_keychain_service: str | None = Field(
         default=None, alias="KOL_DATABASE_URL_KEYCHAIN_SERVICE"
     )
-    runtime_mode: RuntimeMode = Field(default="combined", alias="KOL_RUNTIME_MODE")
     web_read_only: bool = Field(default=False, alias="KOL_WEB_READ_ONLY")
-    worker_id: str = Field(default="mac-worker", alias="KOL_WORKER_ID")
+    worker_id: str = "legacy-worker"
 
     def db_path(self) -> Path:
         p = Path(self.kol_db_path)
@@ -153,6 +285,13 @@ class Settings(BaseSettings):
                 setting_name="KOL_DATABASE_URL_KEYCHAIN_SERVICE",
             )
         return self.db_path()
+
+    def provider_state_database_target(self) -> str | Path:
+        """Use a single-node durable cache DB when explicitly configured."""
+
+        if self.provider_state_db_path is not None:
+            return self.provider_state_db_path.expanduser()
+        return self.database_target()
 
     def x_api_bearer_token(self) -> str | None:
         if self.x_bearer_token:
@@ -210,68 +349,51 @@ class Settings(BaseSettings):
             return ready, None if ready else "缺少 TWITTER_TP_BASE_URL 或 TWITTER_TP_API_KEY"
         if name == "twitterapi_io":
             ready = bool(self.twitterapi_io_api_key)
-            fallback_ready = False
-            if not ready and self.twitter_fallback_backend == "opencli":
-                fallback_ready, _ = self.backend_ready("opencli")
-            ready = ready or fallback_ready
-            return ready, None if ready else "缺少 TWITTERAPI_IO_API_KEY，且 OpenCLI fallback 未配置"
+            return ready, None if ready else "缺少 TWITTERAPI_IO_API_KEY"
+        if name == "getxapi":
+            ready = bool(self.get_x_api_key)
+            return ready, None if ready else "缺少 GET_X_API_KEY"
         if name == "twscrape":
-            ready = bool(self.enable_twscrape and self.twscrape_accounts_file)
-            return ready, None if ready else "需要 ENABLE_TWSCRAPE=true 和账号文件"
-        if name == "opencli":
-            if not self.opencli_command or not self.opencli_profile:
-                return False, "缺少 OPENCLI_COMMAND 或 OPENCLI_PROFILE"
-            if not shutil.which(self.opencli_command) and "/" not in self.opencli_command:
-                return False, f"找不到 OpenCLI 命令：{self.opencli_command}"
-            try:
-                result = subprocess.run(
-                    [self.opencli_command, "profile", "list"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                return False, f"OpenCLI 状态检查失败：{exc}"
-            output = f"{result.stdout}\n{result.stderr}"
-            ready = (
-                result.returncode == 0
-                and self.opencli_profile in output
-                and "connected" in output
-            )
+            db_path = Path(self.twscrape_accounts_db)
+            if not db_path.is_absolute():
+                db_path = PROJECT_ROOT / db_path
+            has_cookie = bool(self.twscrape_auth_token and self.twscrape_ct0)
+            has_state = db_path.exists() or bool(self.twscrape_accounts_file)
+            ready = bool(self.enable_twscrape and (has_cookie or has_state))
             return (
                 ready,
-                None if ready else f"OpenCLI profile {self.opencli_profile!r} 未连接",
+                None
+                if ready
+                else "需要 ENABLE_TWSCRAPE=true，并配置 Cookie 或已有账号状态库",
             )
+        if name == "fxembed":
+            ready = bool(self.enable_fxembed and self.fxembed_base_url)
+            return ready, None if ready else "FxEmbed connector is disabled"
         return False, "未知后端"
 
-    def xiaohongshu_ready(self) -> tuple[bool, str | None]:
-        if not self.opencli_command or not self.xiaohongshu_opencli_profile:
-            return False, "缺少 OPENCLI_COMMAND 或 XIAOHONGSHU_OPENCLI_PROFILE"
-        if not shutil.which(self.opencli_command) and "/" not in self.opencli_command:
-            return False, f"找不到 OpenCLI 命令：{self.opencli_command}"
-        try:
-            result = subprocess.run(
-                [self.opencli_command, "profile", "list"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
+    def twscrape_db_path(self) -> Path:
+        path = Path(self.twscrape_accounts_db)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return path
+
+    def x_provider_names(self) -> tuple[str, ...]:
+        values = [
+            value.strip().lower()
+            for value in self.x_provider_chain.split(",")
+            if value.strip()
+        ]
+        supported = {
+            "mock", "official", "third_party", "twitterapi_io", "getxapi", "twscrape", "fxembed"
+        }
+        unknown = set(values) - supported
+        if unknown:
+            raise ValueError(
+                f"Unknown KOL_X_PROVIDER_CHAIN providers: {', '.join(sorted(unknown))}"
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return False, f"OpenCLI 状态检查失败：{exc}"
-        output = f"{result.stdout}\n{result.stderr}"
-        ready = (
-            result.returncode == 0
-            and self.xiaohongshu_opencli_profile in output
-            and "connected" in output
-        )
-        return (
-            ready,
-            None
-            if ready
-            else f"OpenCLI profile {self.xiaohongshu_opencli_profile!r} 未连接",
-        )
+        if not values:
+            values = [self.twitter_backend]
+        return tuple(dict.fromkeys(values))
 
     def product_domain_allowlist(self) -> set[str]:
         return {

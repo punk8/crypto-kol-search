@@ -21,6 +21,12 @@ class AutomationDatabase:
     def connect(self) -> DatabaseConnection:
         return self.runtime.connect()
 
+    def wait_ready(self, *, timeout: float = 15) -> None:
+        self.runtime.wait_ready(timeout=timeout)
+
+    def close(self) -> None:
+        self.runtime.close()
+
     @contextmanager
     def connection(self) -> Iterator[DatabaseConnection]:
         """Open a read-oriented connection, closing it after use."""

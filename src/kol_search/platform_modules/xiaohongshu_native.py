@@ -143,18 +143,6 @@ def install_xiaohongshu_schema(connection: sqlite3.Connection) -> None:
         "xhs_notes",
         {"relevance_score": "REAL NOT NULL DEFAULT 0"},
     )
-    # Before identity resolution was explicit, OpenCLI author-name fallbacks
-    # were stored as 20-character local hashes. Mark only that legacy shape as
-    # unresolved so existing databases stop sending it to native user feeds.
-    connection.execute(
-        """
-        UPDATE xhs_users SET native_id_resolved=0
-        WHERE source_provider='opencli'
-          AND profile_url IS NULL
-          AND length(id)=20
-          AND id NOT GLOB '*[^0-9a-f]*'
-        """
-    )
     columns = {
         str(row[1])
         for row in connection.execute("PRAGMA table_info(xhs_notes)").fetchall()
@@ -576,6 +564,26 @@ class XiaohongshuRepository:
             )
         next_cursor = str(output[-1]["id"]) if len(rows) > batch_size else None
         return output, next_cursor
+
+    def list_recent_trends(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the latest snapshot of every observed native trend."""
+
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                """
+                WITH latest AS (
+                    SELECT id, MAX(captured_at) AS captured_at
+                    FROM xhs_trends GROUP BY id
+                )
+                SELECT t.id, t.name, t.rank, t.note_count, t.url, t.captured_at
+                FROM xhs_trends t
+                JOIN latest l ON l.id=t.id AND l.captured_at=t.captured_at
+                ORDER BY t.captured_at DESC, t.rank ASC, t.name ASC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 100)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def summary(self) -> dict[str, int]:
         with self.database.transaction() as connection:

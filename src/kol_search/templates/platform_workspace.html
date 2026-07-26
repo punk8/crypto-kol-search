@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ platform.name }} 工作台 · Crypto KOL Search{% endblock %}
+{% block title %}{{ platform.name }} 数据源 · Trend & KOL Discover{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="/static/platforms.css">
 {% set capability_labels = {
@@ -21,20 +21,20 @@
   "disabled": "已停用"
 } %}
 <div class="platform-page platform-workspace-page" style="--platform-accent: {{ platform.accent_color }}">
-  <nav class="platform-breadcrumb" aria-label="面包屑"><a href="{{ urls.center }}">平台中心</a><span>/</span><span aria-current="page">{{ platform.name }}</span></nav>
+  <nav class="platform-breadcrumb" aria-label="面包屑"><a href="/">发现首页</a><span>/</span><span aria-current="page">{{ platform.name }}</span></nav>
 
   <section class="platform-workspace-head">
     <div class="platform-workspace-identity">
       <span class="platform-mark platform-mark--large" aria-hidden="true">{{ platform.short_name }}</span>
       <div>
         <p class="eyebrow">{{ platform.platform_id }} WORKSPACE · v{{ platform.version }}</p>
-        <h1>{{ platform.name }} 工作台</h1>
+        <h1>{{ platform.name }} 数据源</h1>
         <p>{{ platform.description }}</p>
         <span class="platform-health platform-health--{{ platform.connection_status }}"><i aria-hidden="true"></i>{{ connection_labels.get(platform.connection_status, platform.connection_status) }}{% if platform.connection_message %} · {{ platform.connection_message }}{% endif %}</span>
       </div>
     </div>
     <div class="platform-head-actions">
-      {% if platform.can_scan %}<form action="{{ urls.scan }}" method="post"><input type="hidden" name="platform_id" value="{{ platform.platform_id }}"><button type="submit" class="ghost">立即扫描信号</button></form>{% endif %}
+      {% if platform.can_scan %}<form action="{{ urls.scan }}" method="post"><input type="hidden" name="platform_id" value="{{ platform.platform_id }}"><button type="submit" class="ghost">刷新趋势与内容</button></form>{% endif %}
     </div>
   </section>
 
@@ -43,18 +43,17 @@
   {% for item in alerts %}<a class="notice {{ 'warning' if item.severity in ['warning', 'critical'] else '' }} platform-inline-alert" href="{{ item.href }}"><strong>{{ item.title }}</strong><span>{{ item.message }}</span></a>{% endfor %}
 
   <nav class="platform-tabs" aria-label="工作台导航">
-    <a href="#inbox">{{ platform.get('metadata', {}).get('feed_label', '热点机会') }}{% if metrics.open_opportunities %}<span>{{ metrics.open_opportunities }}</span>{% endif %}</a>
-    <a href="#discover">发现</a>
+    <a href="#inbox">趋势与内容</a>
+    <a href="#discover">KOL Discover</a>
     <a href="#library">KOL 库</a>
-    <a href="#automation">自动化</a>
-    <a href="{{ urls.runs }}">任务运行</a>
+    <a href="{{ urls.runs }}">发现记录</a>
   </nav>
 
   <section class="platform-summary" aria-label="{{ platform.name }} 概览">
     <article><span>Active KOL</span><strong>{{ metrics.active_kols }}</strong><small>{% if platform.automatic_kol_management %}{{ metrics.candidate_kols }} 个由后台持续观察{% else %}{{ metrics.review_kols }} 个等待复核{% endif %}</small></article>
-    <article><span>开放机会</span><strong>{{ metrics.open_opportunities }}</strong><small>{{ metrics.planned_opportunities }} 个已进入计划</small></article>
-    <article><span>今日自动执行</span><strong>{{ metrics.succeeded_actions_today }}</strong><small>{{ metrics.review_actions }} 个需人工审核</small></article>
-    <article><span>下次自动扫描</span><strong class="platform-summary-time">{{ metrics.next_scan_at }}</strong><small>{{ platform.scan_interval_label }}</small></article>
+    <article><span>Candidate KOL</span><strong>{{ metrics.candidate_kols }}</strong><small>等待更多内容证据</small></article>
+    <article><span>已发现趋势</span><strong>{{ metrics.trends }}</strong><small>平台原生趋势快照</small></article>
+    <article><span>内容样本</span><strong>{{ metrics.content }}</strong><small>用于发现与评分</small></article>
   </section>
 
   <div class="platform-workspace-grid">
@@ -84,7 +83,7 @@
       {% endblock %}
 
       <section class="platform-panel" id="discover" aria-labelledby="discover-title">
-        <div class="platform-panel-head"><div><p class="eyebrow">MANUAL DISCOVERY</p><h2 id="discover-title">手动主题发现</h2><p>结果会与自动扫描共享同一个 {{ platform.name }} KOL 库。</p></div></div>
+        <div class="platform-panel-head"><div><p class="eyebrow">KOL DISCOVER</p><h2 id="discover-title">按主题发现 KOL</h2><p>当前请求会直接读取平台并更新 {{ platform.name }} KOL 库。</p></div></div>
         {% if 'account_search' in platform.capabilities or 'content_search' in platform.capabilities or 'relations' in platform.capabilities %}
         <form action="{{ urls.discover }}" method="post" class="platform-discovery-form">
           <input type="hidden" name="platform_id" value="{{ platform.platform_id }}">
@@ -95,7 +94,7 @@
             {% if 'relations' in platform.capabilities %}<option value="relations">种子关系扩展</option>{% endif %}
           </select></label>
           <label>结果上限<input name="limit" type="number" min="1" max="100" value="{{ discovery.default_limit }}"></label>
-          <button type="submit"{% if active_discovery %} disabled aria-disabled="true"{% endif %}>{{ '发现进行中…' if active_discovery else '开始发现' }}</button>
+          <button type="submit">开始发现</button>
         </form>
         {% else %}
         <div class="platform-capability-empty"><strong>{{ platform.name }} 尚未开放搜索能力</strong><p>热点机会仍可使用已接入的数据来源。</p></div>
@@ -145,7 +144,7 @@
       </section>
     </main>
 
-    <aside class="platform-workspace-side" id="automation">
+    {% if false %}<aside class="platform-workspace-side" id="automation">
       <section class="platform-panel">
         <div class="platform-panel-head"><div><p class="eyebrow">CAPABILITIES</p><h2>能力与安全边界</h2></div></div>
         <div class="platform-capability-matrix">
@@ -167,7 +166,7 @@
         </div>
       </section>
 
-    </aside>
+    </aside>{% endif %}
   </div>
 </div>
 {% endblock %}

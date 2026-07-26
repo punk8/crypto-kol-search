@@ -1,0 +1,25 @@
+[Unit]
+Description=SignalScope Discover autonomous worker
+After=network-online.target postgresql-15.service
+Wants=network-online.target
+Requires=postgresql-15.service
+
+[Service]
+Type=simple
+User=signalscope
+Group=signalscope
+WorkingDirectory=/opt/signalscope/current
+EnvironmentFile=/etc/signalscope/backend.env
+Environment=HOME=/var/lib/signalscope
+ExecStart=/opt/signalscope/current/.venv/bin/kol-search backend-scheduler
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWriteDirectories=/var/lib/signalscope /var/cache/signalscope
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

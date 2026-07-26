@@ -1,0 +1,140 @@
+<div class="discover-page" id="hot-content">
+  <header class="page-heading">
+    <div>
+      <p class="page-kicker">PUBLIC CONTENT VELOCITY</p>
+      <h1>Hot Content</h1>
+      <p>{% if x_live_provider %}Review live public candidates now; repeated observations will identify which posts are truly accelerating.{% else %}See the public posts accelerating fastest—and the evidence-backed reason each one surfaced.{% endif %}</p>
+    </div>
+    <div class="heading-actions">
+      <span class="mock-pill"><i></i>{{ data_mode }}</span>
+      <span class="semantic-note">ⓘ {{ hot_ranking_note or "Breakout scores are platform-relative" }}</span>
+    </div>
+  </header>
+
+  <nav class="source-switch" aria-label="Hot content source">
+    <a href="/hot-content?source=discover&platform={{ selected_platform }}" class="{{ 'is-active' if content_source == 'discover' else '' }}">
+      <strong>Discover</strong><small>Trending public content, whether or not you follow the author</small>
+    </a>
+    <a href="/hot-content?source=following&platform={{ selected_platform }}" class="{{ 'is-active' if content_source == 'following' else '' }}">
+      <strong>Following</strong><small>Breakout posts from platform accounts already on your watchlist</small>
+    </a>
+  </nav>
+
+  <nav class="hot-domain-tabs" aria-label="Filter Hot Content by domain">
+    <a href="/hot-content?source={{ content_source }}&platform=x" class="{{ 'is-active' if not selected_hot_domain else '' }}">All boards</a>
+    {% for domain in discovery_domains %}
+    <a href="/hot-content?source={{ content_source }}&platform=x&domain={{ domain.key }}" class="{{ 'is-active' if selected_hot_domain == domain.key else '' }}">{{ domain.name }}</a>
+    {% endfor %}
+  </nav>
+
+  <div class="hot-summary watch-summary">
+    {% for label, value, note in hot_summary %}
+    <article><i>{{ ("♨", "↗", "◎", "ϟ")[loop.index0] }}</i><span><strong>{{ value }}</strong>{{ label }}<small>{{ note }}</small></span></article>
+    {% endfor %}
+  </div>
+
+  <nav class="platform-tabs hot-platform-tabs" aria-label="Filter hot content by platform">
+    {% for item in platforms %}
+    <a href="/hot-content?source={{ content_source }}&platform={{ item.id }}" class="{{ 'is-active' if selected_platform == item.id else '' }}"><span class="source-mark source-mark--{{ item.tone }}">{{ item.mark }}</span>{{ item.name }}</a>
+    {% endfor %}
+    <span class="sort-control">{{ hot_sort_label or "Ranked by platform-relative velocity" }}⌄</span>
+  </nav>
+
+  <div class="hot-layout">
+    <section class="panel hot-ranking">
+      <div class="panel-heading">
+        <div>
+          <h2>{% if x_live_provider and content_source == "discover" %}Live public candidates{% else %}{{ "All breakouts" if content_source == "discover" else "Watched KOL breakouts" }}{% endif %}</h2>
+          <p>{% if x_live_provider %}Current public engagement is real; velocity and breakout status require stored metric snapshots.{% else %}Native engagement stays intact; the breakout score is calculated within each platform.{% endif %}</p>
+        </div>
+        <span>{{ hot_content|length }} posts shown</span>
+      </div>
+      <div class="hot-table-wrap">
+        <table class="hot-table">
+          <thead><tr><th>#</th><th>Platform</th><th>Author</th><th>Post</th><th>Published</th><th>Native engagement</th><th>Velocity</th><th>Why it is hot</th><th>Reply</th></tr></thead>
+          <tbody>
+          {% for item in hot_content %}
+          <tr data-hot-content-row data-breakout-reason="{{ item.reason }}">
+            <td><b class="hot-rank">{{ loop.index }}</b></td>
+            <td><span class="hot-platform"><i class="source-mark source-mark--{{ item.source.tone }}">{{ item.source.mark }}</i><small>{{ item.type }}</small></span></td>
+            <td><span class="hot-author"><i class="kol-avatar kol-avatar--{{ ('violet', 'rose', 'blue', 'amber', 'mint', 'slate')[loop.index0 % 6] }}">{{ item.author[:2]|upper }}</i><span><strong>{{ item.author }}</strong><small>{{ item.handle }}</small></span></span></td>
+            <td><span class="hot-post-copy"><strong>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noreferrer">{{ item.excerpt }}</a>{% else %}{{ item.excerpt }}{% endif %}</strong><small>{{ "Related trend" if item.trend else "Source" }} · {{ item.trend or item.provider }}</small></span></td>
+            <td><span class="hot-time"><strong>{{ item.published }}</strong><small>Retrieved {{ item.retrieved }}</small></span></td>
+            <td><strong class="native-metric">{{ item.engagement }}</strong></td>
+            <td><span class="velocity-cell"><strong>{{ item.velocity }}</strong><span class="line-spark" aria-hidden="true">{% for point in item.spark %}<i style="--point:{{ point }}%"></i>{% endfor %}</span><small>Score {{ item.score }}</small></span></td>
+            <td><span class="breakout-badge breakout-badge--{{ item.reason }}">{{ item.reason_label }}</span></td>
+            <td>
+              {% if item.can_reply and item.platform == 'x' %}
+              <button type="button" class="reply-draft-button" data-reply-draft data-platform="x" data-content-id="{{ item.id }}">
+                <span class="reply-button-label">Generate</span><span class="reply-button-spinner" aria-hidden="true"></span>
+              </button>
+              {% else %}<span class="reply-unavailable">—</span>{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9"><div class="panel-empty">{{ x_live_empty_reason or ("No live X posts are available for the current query." if selected_platform == "x" else "No breakout content matches this source and platform.") }}</div></td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <footer class="hot-ranking-footer">{% if x_live_provider %}Live X candidates are sorted by current engagement. They are not labelled as breakouts until comparable observations exist.{% else %}Scores compare each post with content from the same platform and time window.{% endif %}</footer>
+    </section>
+
+    <aside class="hot-aside">
+      {% if x_live_provider %}
+      <section class="panel hot-insight-card">
+        <div class="subsection-heading"><h2>Live X status</h2><small>Current view</small></div>
+        <p><i>↗</i><span><strong>Candidates</strong><small>Public X observations</small></span><b>{{ x_live_count or 0 }}</b></p>
+        <p><i class="is-purple">◷</i><span><strong>Velocity</strong><small>Requires repeat snapshots</small></span><b>Pending</b></p>
+      </section>
+      <section class="panel freshness-card">
+        <div class="subsection-heading"><h2>Evidence state</h2><small>Live</small></div>
+        <p><span>Most recent</span><strong>Just now</strong></p>
+        <p><span>Public metrics</span><strong>Available</strong></p>
+        <p><span>Breakout scoring</span><strong>Awaiting history</strong></p>
+        <i></i>
+      </section>
+      {% else %}
+      <section class="panel hot-insight-card">
+        <div class="subsection-heading"><h2>Why it is hot</h2><small>Current view</small></div>
+        {% for label, value in breakout_mix %}
+        <p><i class="{{ 'is-purple' if 'Watched' in label else '' }}">{{ '◎' if 'Watched' in label else '↗' }}</i><span><strong>{{ label }}</strong><small>{{ "From accounts you follow" if "Watched" in label else "Public platform evidence" }}</small></span><b>{{ value }}</b></p>
+        {% endfor %}
+      </section>
+
+      <section class="panel related-hot-trend">
+        <div class="subsection-heading"><h2>Related trend</h2><a href="/trends#trend-hot-posts">View trend</a></div>
+        <h3>{{ related_trend[0] }}</h3>
+        <div><span><small>Velocity</small><strong>{{ related_trend[1] }}</strong></span><span><small>Posts (24h)</small><strong>{{ related_trend[2] }}</strong></span></div>
+        <span class="line-spark line-spark--large" aria-hidden="true">{% for point in (18, 24, 21, 39, 46, 58, 54, 78, 92) %}<i style="--point:{{ point }}%"></i>{% endfor %}</span>
+      </section>
+
+      <section class="panel freshness-card">
+        <div class="subsection-heading"><h2>Evidence freshness</h2><small>Excellent</small></div>
+        <p><span>Most recent</span><strong>1 min ago</strong></p>
+        <p><span>Data updated</span><strong>2 min ago</strong></p>
+        <p><span>Scoring window</span><strong>Last 24 h</strong></p>
+        <i></i>
+      </section>
+      {% endif %}
+    </aside>
+  </div>
+</div>
+
+<dialog class="reply-draft-dialog" data-reply-dialog aria-labelledby="reply-draft-title">
+  <form method="dialog" class="reply-dialog-shell">
+    <header>
+      <div><p class="page-kicker">DEEPSEEK ASSISTED</p><h2 id="reply-draft-title">Reply draft</h2></div>
+      <button value="cancel" class="reply-dialog-close" aria-label="Close">×</button>
+    </header>
+    <p class="reply-dialog-note">Review and edit before opening X. Nothing is posted automatically.</p>
+    <textarea data-reply-draft-text maxlength="280" rows="6" aria-label="Generated reply"></textarea>
+    <div class="reply-dialog-meta"><span data-reply-count>0 / 280</span><span data-reply-model></span></div>
+    <p class="reply-dialog-error" data-reply-error hidden></p>
+    <footer>
+      <button type="button" class="secondary-button" data-copy-reply>Copy reply</button>
+      <a class="primary-button" data-open-reply href="https://x.com" target="_blank" rel="noreferrer">Open X reply</a>
+    </footer>
+  </form>
+</dialog>
+<script src="/static/discover-reply.js" defer></script>

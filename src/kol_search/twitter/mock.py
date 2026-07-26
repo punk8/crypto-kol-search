@@ -20,7 +20,11 @@ class MockTwitterClient:
 
     name = "mock"
     capabilities = XReadCapabilities(
-        user_search=True, followings=True, verified_followers=True, trends=True
+        user_search=True,
+        followings=True,
+        verified_followers=True,
+        trends=True,
+        post_lookup=True,
     )
 
     def __init__(self, fixtures_dir: Path | None = None) -> None:
@@ -102,6 +106,7 @@ class MockTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         # Simple token match: split on OR/AND/quotes-ish
         tokens = [t for t in re.split(r"\s+OR\s+|\s+AND\s+|\s+", query, flags=re.I) if t]
@@ -159,10 +164,14 @@ class MockTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         posts = [p for p in self._posts if p.author_id == str(user_id)]
         posts.sort(key=lambda p: p.created_at or "", reverse=True)
         return posts[:max_results]
+
+    def get_tweet(self, tweet_id: str) -> XTweet | None:
+        return next((post for post in self._posts if post.id == str(tweet_id)), None)
 
     def get_followings(self, username: str, max_results: int = 20) -> list[XAccount]:
         source = self.get_user_by_username(username)
@@ -178,7 +187,13 @@ class MockTwitterClient:
         values = [a for a in self._by_id.values() if a.id != str(user_id) and a.verified]
         return values[:max_results]
 
-    def get_trends(self, max_results: int = 20) -> list[XTrend]:
+    def get_trends(
+        self,
+        max_results: int = 20,
+        *,
+        category: str | None = None,
+        locale: str | None = None,
+    ) -> list[XTrend]:
         return [
             XTrend(name="DeFi", rank=1, post_count=12000),
             XTrend(name="Bitcoin", rank=2, post_count=9000),

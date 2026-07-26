@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}平台中心 · Crypto KOL Search{% endblock %}
+{% block title %}平台数据源 · Trend & KOL Discover{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="/static/platforms.css">
 {% set connection_labels = {
@@ -11,9 +11,9 @@
 <div class="platform-page platform-center-page">
   <section class="platform-center-head">
     <div>
-      <p class="eyebrow">MULTI-PLATFORM GROWTH CONTROL</p>
-      <h1>平台中心</h1>
-      <p>在每个平台的原生语境中发现 KOL、捕捉机会并管理自动化。这里只汇总运行健康度，不做跨平台影响力排名。</p>
+      <p class="eyebrow">DISCOVERY DATA SOURCES</p>
+      <h1>平台数据源</h1>
+      <p>查看每个平台的读取能力、原生趋势与 KOL 数据规模。平台评分保持独立，不做跨平台影响力换算。</p>
     </div>
     <a class="button ghost" href="{{ urls.discovery }}">新建搜索任务</a>
   </section>
@@ -24,15 +24,15 @@
 
   <section class="platform-summary" aria-label="运行概览">
     <article><span>已启用平台</span><strong>{{ summary.enabled_platforms }}</strong><small>共 {{ summary.total_platforms }} 个已注册</small></article>
-    <article><span>运行中任务</span><strong>{{ summary.active_tasks }}</strong><small>{{ summary.queued_tasks }} 个等待执行</small></article>
-    <article><span>待处理机会</span><strong>{{ summary.open_opportunities }}</strong><small>各平台内独立排序</small></article>
-    <article><span>需要关注</span><strong>{{ summary.alert_count }}</strong><small>{{ summary.paused_channels }} 个通道暂停</small></article>
+    <article><span>运行中请求</span><strong>{{ summary.active_tasks }}</strong><small>发现由当前请求直接执行</small></article>
+    <article><span>已排队请求</span><strong>{{ summary.queued_tasks }}</strong><small>正常应保持为 0</small></article>
+    <article><span>连接提示</span><strong>{{ summary.alert_count }}</strong><small>检查读取凭据与数据源</small></article>
   </section>
 
   <section aria-labelledby="registered-platforms-title">
     <div class="platform-section-title">
       <div><p class="eyebrow">REGISTERED PLATFORMS</p><h2 id="registered-platforms-title">平台工作台</h2></div>
-      <span>按平台管理原生账号、内容与指标</span>
+      <span>按平台查看原生趋势、内容与账号</span>
     </div>
     <div class="platform-card-grid">
       {% for item in platforms %}
@@ -54,9 +54,9 @@
 
         <div class="platform-card-metrics">
           <div><strong>{{ item.metrics.active_kols }}</strong><span>Active KOL</span></div>
-          <div><strong>{{ item.metrics.open_opportunities }}</strong><span>开放机会</span></div>
-          <div><strong>{{ item.metrics.succeeded_actions_today }}</strong><span>今日成功</span></div>
-          <div><strong>{{ item.metrics.paused_channels }}</strong><span>暂停通道</span></div>
+          <div><strong>{{ item.metrics.candidate_kols }}</strong><span>Candidate KOL</span></div>
+          <div><strong>{{ item.metrics.trends }}</strong><span>原生趋势</span></div>
+          <div><strong>{{ item.metrics.content }}</strong><span>内容样本</span></div>
         </div>
 
         <div class="platform-capabilities" aria-label="{{ item.name }} 已启用能力">
@@ -66,7 +66,7 @@
         <footer>
           <span>最近扫描<br><strong>{{ item.last_scan_at or '尚未扫描' }}</strong></span>
           {% if item.enabled %}
-          <a class="button" href="{{ item.workspace_url }}">进入工作台</a>
+          <a class="button" href="{{ item.workspace_url }}">查看数据源</a>
           {% else %}
           <span class="button ghost" aria-disabled="true">平台已停用</span>
           {% endif %}

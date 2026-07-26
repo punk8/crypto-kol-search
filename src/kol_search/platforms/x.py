@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,9 @@ from kol_search.platforms.kernel import (
     PlatformTaskResult,
 )
 from kol_search.twitter.base import merge_client_diagnostics
+
+
+_TREND_TWEET_CURSOR_KEY = "__trend_tweets__"
 
 
 class XAccount(BaseModel):
@@ -113,19 +117,12 @@ X_MANIFEST = PlatformManifest(
             PlatformCapability.TIMELINE_FEED,
             PlatformCapability.RELATIONS,
             PlatformCapability.NATIVE_TRENDS,
-            PlatformCapability.COMMENT,
-            PlatformCapability.DM,
             PlatformCapability.OWNED_PUBLISH,
             PlatformCapability.ANALYTICS,
         }
     ),
     default_scan_interval_seconds=30 * 60,
     safety_limits={
-        "comment_hourly": 3,
-        "comment_daily": 10,
-        "dm_hourly": 2,
-        "dm_daily": 5,
-        "author_cooldown_days": 7,
         "owned_publish_daily": 2,
     },
     workbench_path="/platforms/x",
@@ -346,19 +343,6 @@ class _XRuntime:
                 ready=bool(_attr(result, "ready", False)),
                 account=_attr(result, "account"),
                 detail=_attr(result, "detail"),
-            )
-        run = getattr(client, "_run", None)
-        if callable(run):
-            rows = run("whoami")
-            row = rows[0] if rows else {}
-            account = str(
-                _attr(row, "screen_name") or _attr(row, "username") or ""
-            ).lstrip("@")
-            return PlatformHealthResult(
-                platform_id="x",
-                ready=bool(account),
-                account=account or None,
-                detail=None if account else "X account is not connected",
             )
         provider = str(getattr(client, "name", "x") or "x")
         return PlatformHealthResult(
@@ -591,36 +575,6 @@ class _XRuntime:
             for item in (context.payload.get("account_targets") or ())
             if isinstance(item, Mapping)
         }
-        timeline_ids: dict[str, str] = {}
-        opencli_targets = {
-            external_id: str(
-                target_by_id.get(external_id, {}).get("handle")
-                or target_by_id.get(external_id, {}).get("username")
-                or ""
-            ).lstrip("@")
-            for external_id in account_ids
-            if external_id.startswith("opencli:")
-        }
-        lookup = getattr(client, "get_users_by_usernames", None)
-        if opencli_targets and callable(lookup):
-            try:
-                profiles = {
-                    account.username.casefold(): account
-                    for account in (
-                        _x_account(value)
-                        for value in lookup(
-                            list(dict.fromkeys(opencli_targets.values()))
-                        )
-                    )
-                }
-                timeline_ids = {
-                    external_id: profiles[handle.casefold()].external_id
-                    for external_id, handle in opencli_targets.items()
-                    if handle.casefold() in profiles
-                }
-            except Exception:
-                # The original OpenCLI identity remains a valid fallback route.
-                timeline_ids = {}
         items: list[object] = []
         warnings: list[str] = []
         attempted = 0
@@ -632,15 +586,18 @@ class _XRuntime:
                 username = str(
                     target.get("handle") or target.get("username") or external_id
                 ).lstrip("@")
+                previous = account_cursors.get(external_id) or account_cursors.get("*")
+                timeline_kwargs: dict[str, object] = {"username": username}
+                if previous and _accepts_keyword(client.get_user_tweets, "start_time"):
+                    timeline_kwargs["start_time"] = previous
                 tweets = [
                     _x_tweet(item)
                     for item in client.get_user_tweets(  # type: ignore[attr-defined]
-                        timeline_ids.get(external_id, external_id),
+                        external_id,
                         limit,
-                        username=username,
+                        **timeline_kwargs,
                     )
                 ]
-                previous = account_cursors.get(external_id) or account_cursors.get("*")
                 items.extend(
                     tweet
                     for tweet in tweets
@@ -697,14 +654,29 @@ class _XRuntime:
                             query = " OR ".join(
                                 trend.name for trend in ordered_trends
                             )
+                            trend_cursor = account_cursors.get(
+                                _TREND_TWEET_CURSOR_KEY
+                            )
+                            search_kwargs: dict[str, object] = {}
+                            if trend_cursor and _accepts_keyword(
+                                search_tweets, "start_time"
+                            ):
+                                search_kwargs["start_time"] = trend_cursor
                             trend_tweets = [
                                 _x_tweet(item)
                                 for item in search_tweets(
                                     query,
                                     min(50, tweets_per_trend * len(ordered_trends)),
+                                    **search_kwargs,
                                 )
                             ]
-                            for tweet in trend_tweets:
+                            fresh_trend_tweets = [
+                                tweet
+                                for tweet in trend_tweets
+                                if not trend_cursor
+                                or _is_after_cursor(tweet.created_at, trend_cursor)
+                            ]
+                            for tweet in fresh_trend_tweets:
                                 searchable_text = tweet.text.casefold().replace("#", "")
                                 matches = [
                                     trend
@@ -722,6 +694,14 @@ class _XRuntime:
                                     )
                                     for trend in matches
                                 )
+                            latest_trend_cursor = _latest_scan_cursor(
+                                trend_cursor,
+                                (tweet.created_at for tweet in trend_tweets),
+                            )
+                            if latest_trend_cursor:
+                                account_cursors[
+                                    _TREND_TWEET_CURSOR_KEY
+                                ] = latest_trend_cursor
                             succeeded += 1
                         except Exception as exc:
                             warnings.append(
@@ -749,19 +729,12 @@ class _XRuntime:
         )
 
     def refresh_outcomes(self, context: PlatformTaskContext) -> PlatformTaskResult:
-        from kol_search.platform_modules.browser_actions import refresh_x_browser_outcomes
-
         settings = context.settings or self.settings
         if context.settings is None:
             context = replace(context, settings=settings)
-        browser_result = refresh_x_browser_outcomes(context)
-        updates: list[PlatformOutcomeUpdate] = [
-            item
-            for item in browser_result.items
-            if isinstance(item, PlatformOutcomeUpdate)
-        ]
-        warnings = list(browser_result.warnings)
-        checked = int(browser_result.metadata.get("actions_checked", 0))
+        updates: list[PlatformOutcomeUpdate] = []
+        warnings: list[str] = []
+        checked = 0
         actions = tuple(
             item
             for item in (context.payload.get("actions") or ())
@@ -771,7 +744,9 @@ class _XRuntime:
             in {"owned_post", "owned_publish"}
         )
         if not actions:
-            return browser_result
+            return PlatformTaskResult.completed(
+                (), metadata={"actions_checked": 0, "outcomes_updated": 0}
+            )
 
         publisher, owns_publisher, error = _postiz_publisher(context, settings)
         if publisher is None:
@@ -876,9 +851,9 @@ class _XRuntime:
         try:
             if action_type in {"owned_post", "owned_publish"}:
                 return _execute_owned_publish(context, settings)
-            from kol_search.platform_modules.browser_actions import execute_x_browser_action
-
-            return execute_x_browser_action(context)
+            return ActionExecutionResult.failed(
+                "X comments and DMs require a supported HTTP write provider"
+            )
         except Exception as exc:
             return ActionExecutionResult.failed(str(exc))
 
@@ -980,7 +955,9 @@ def _execute_owned_publish(
                 confirmed=False,
                 error="Postiz create response is missing a post id; do not retry automatically",
             )
-        confirmed = mode == "schedule" or bool(receipt_url)
+        # A Postiz schedule id proves provider acceptance, not that X published
+        # the post. Keep it reconcilable until Postiz returns the X release URL.
+        confirmed = bool(receipt_url)
         return ActionExecutionResult(
             success=True,
             external_id=external_id,
@@ -990,7 +967,7 @@ def _execute_owned_publish(
             error=(
                 None
                 if confirmed
-                else "Postiz accepted the immediate publish but no release URL was returned"
+                else "Postiz accepted the publish but no X release URL was returned"
             ),
         )
     finally:
@@ -1263,6 +1240,20 @@ def _optional_string(value: object) -> str | None:
     return text or None
 
 
+def _accepts_keyword(method: Callable[..., object], keyword: str) -> bool:
+    """Keep custom providers compatible while using optional incremental filters."""
+
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == keyword
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
 def _decode_scan_cursor(value: str | None) -> dict[str, str]:
     if not value:
         return {}
@@ -1330,11 +1321,6 @@ def x_manifest(settings: object | None = None) -> PlatformManifest:
         or getattr(settings, "signal_interval_minutes", 30)
     )
     limits = {
-        "comment_hourly": int(getattr(settings, "comment_hourly_limit", 3)),
-        "comment_daily": int(getattr(settings, "comment_daily_limit", 10)),
-        "dm_hourly": int(getattr(settings, "dm_hourly_limit", 2)),
-        "dm_daily": int(getattr(settings, "dm_daily_limit", 5)),
-        "author_cooldown_days": int(getattr(settings, "author_cooldown_days", 7)),
         "owned_publish_daily": int(getattr(settings, "publish_daily_limit", 2)),
     }
     return replace(

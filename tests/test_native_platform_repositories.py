@@ -17,9 +17,9 @@ def test_x_persistence_reuses_account_identity_across_providers(tmp_path: Path) 
     repository = XRepository(tmp_path / "x-provider-identity.db")
     repository.upsert_account(
         XAccount(
-            external_id="opencli:alice",
+            external_id="vendor:alice",
             username="Alice",
-            source_provider="opencli",
+            source_provider="vendor_a",
         ),
         track_as_kol=False,
     )
@@ -40,8 +40,8 @@ def test_x_persistence_reuses_account_identity_across_providers(tmp_path: Path) 
 
     adapter._persist([official_account], [official_tweet], [], [])
 
-    assert official_account.external_id == "opencli:alice"
-    assert official_tweet.author_external_id == "opencli:alice"
+    assert official_account.external_id == "vendor:alice"
+    assert official_tweet.author_external_id == "vendor:alice"
     with repository.database.transaction() as connection:
         accounts = connection.execute(
             "SELECT id, display_name, source_provider FROM x_accounts"
@@ -51,13 +51,13 @@ def test_x_persistence_reuses_account_identity_across_providers(tmp_path: Path) 
         ).fetchone()
     assert [dict(row) for row in accounts] == [
         {
-            "id": "opencli:alice",
+            "id": "vendor:alice",
             "display_name": "Alice Official",
             "source_provider": "official",
         }
     ]
     assert tweet is not None
-    assert tweet["author_id"] == "opencli:alice"
+    assert tweet["author_id"] == "vendor:alice"
 
 
 def test_x_and_xiaohongshu_keep_independent_native_models(tmp_path: Path) -> None:
@@ -81,31 +81,6 @@ def test_x_and_xiaohongshu_keep_independent_native_models(tmp_path: Path) -> Non
     assert xhs.list_kols()[0]["status"] == "review"
     assert x.summary()["content"] == 1
     assert xhs.summary()["content"] == 1
-
-
-def test_xiaohongshu_migration_marks_legacy_local_author_hash_unresolved(
-    tmp_path: Path,
-) -> None:
-    repository = XiaohongshuRepository(tmp_path / "legacy-xhs-author.db")
-    legacy_hash = "abcdef0123456789abcd"
-    repository.upsert_user(
-        XiaohongshuUser(
-            external_id=legacy_hash,
-            nickname="Legacy author",
-            source_provider="opencli",
-        )
-    )
-
-    repository.migrate()
-
-    saved = repository.get_kol(legacy_hash)
-    assert saved is not None
-    assert saved["native_id_resolved"] == 0
-    targets, cursor = repository.list_scan_targets(
-        statuses=("candidate",), after=None, limit=20
-    )
-    assert targets == []
-    assert cursor is None
 
 
 def test_x_workspace_feeds_are_time_ordered_and_exclude_paused_kols(tmp_path: Path) -> None:

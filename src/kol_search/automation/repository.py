@@ -577,7 +577,42 @@ class AutomationStore:
             claimed = connection.execute(
                 "SELECT * FROM automation_jobs WHERE id=?", (job_id,)
             ).fetchone()
-            return _record(claimed, JOB_JSON)
+        return _record(claimed, JOB_JSON)
+
+    def claim_job(
+        self,
+        job_id: int,
+        worker_id: str,
+        *,
+        now: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Claim one known queued job for request-scoped execution."""
+
+        worker_id = _required(worker_id, "worker_id")
+        timestamp = now or utc_now()
+        with self.database.transaction(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE automation_jobs SET status='running', progress=1, phase='starting',
+                    attempts=attempts+1, locked_by=?, locked_at=?,
+                    started_at=COALESCE(started_at, ?), error=NULL, updated_at=?
+                WHERE id=? AND status='queued' AND available_at<=?
+                """,
+                (
+                    worker_id,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                    job_id,
+                    timestamp,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = connection.execute(
+                "SELECT * FROM automation_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        return _record(claimed, JOB_JSON)
 
     def recover_stale_jobs(
         self,

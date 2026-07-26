@@ -285,7 +285,7 @@ def platform_workspace_context(
                 "message": str(
                     (reader or {}).get("last_health_error")
                     or ((reader or {}).get("metadata") or {}).get("detail")
-                    or "请检查平台凭据或 Browser Bridge"
+                    or "请检查平台 HTTP API 凭据"
                 ),
                 "href": "#automation",
             },
@@ -301,7 +301,17 @@ def platform_workspace_context(
         ),
         None,
     )
-    capabilities = sorted(item.value for item in manifest.capabilities)
+    read_capabilities = {
+        PlatformCapability.ACCOUNT_SEARCH.value,
+        PlatformCapability.CONTENT_SEARCH.value,
+        PlatformCapability.TIMELINE_FEED.value,
+        PlatformCapability.RELATIONS.value,
+        PlatformCapability.NATIVE_TRENDS.value,
+        PlatformCapability.ANALYTICS.value,
+    }
+    capabilities = sorted(
+        item.value for item in manifest.capabilities if item.value in read_capabilities
+    )
     adapter = registry.resolve_automation_adapter(platform_id)
     workspace_feed_builder = getattr(adapter, "workspace_feed", None)
     native_workspace = (
@@ -312,14 +322,14 @@ def platform_workspace_context(
             **manifest.as_dict(),
             "short_name": str(manifest.metadata.get("short_name") or platform_id[:3].upper()),
             "accent_color": str(manifest.metadata.get("accent_color") or "#52606d"),
-            "description": "独立维护原生账号、内容、评分与自动化动作。",
+            "description": "读取原生趋势、内容与账号证据，并维护平台内 KOL 评分。",
             "connection_status": status,
             "connection_message": (reader or {}).get("last_health_error"),
             "kill_switch": f"platform:{platform_id}" in paused_control_keys,
             "scan_interval_label": (
                 f"每 {manifest.default_scan_interval_seconds // 60} 分钟"
             ),
-            "safety_summary": "平台安全限制与全局策略同时生效；未知写入结果不会重试。",
+            "safety_summary": "当前产品仅开放发现与只读研究能力。",
             "capabilities": capabilities,
             "can_scan": registry.has_handler(platform_id, "scan_signals"),
             "automatic_kol_management": not _settings(request).review_queue_enabled,
@@ -343,6 +353,8 @@ def platform_workspace_context(
             "active_kols": int(native.get("active", 0)),
             "review_kols": int(native.get("review", 0)),
             "candidate_kols": int(native.get("candidate", 0)),
+            "trends": int(native.get("trends", 0)),
+            "content": int(native.get("content", 0)),
             "open_opportunities": int(summary.get("open_opportunity_count", 0)),
             "planned_opportunities": sum(
                 1 for row in opportunities if row["status"] == "planned"
@@ -493,9 +505,12 @@ def create_platform_workspace_router(manifest: PlatformManifest) -> APIRouter:
             raise HTTPException(status_code=404, detail="平台未注册") from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        request.app.state.platform_worker.notify()
+        try:
+            _platform_service(request).execute_job_now(job_id)
+        except RuntimeError:
+            pass
         return RedirectResponse(
-            url=f"{workspace_path}/runs?discovery=queued&job_id={job_id}",
+            url=f"{workspace_path}?discovery=completed&job_id={job_id}#library",
             status_code=303,
         )
 
@@ -509,9 +524,12 @@ def create_platform_workspace_router(manifest: PlatformManifest) -> APIRouter:
             raise HTTPException(status_code=404, detail="平台未注册") from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        request.app.state.platform_worker.notify()
+        try:
+            _platform_service(request).execute_job_now(job_id)
+        except RuntimeError:
+            pass
         return RedirectResponse(
-            url=f"{workspace_path}/runs?scan=queued&job_id={job_id}",
+            url=f"{workspace_path}?scan=completed&job_id={job_id}#inbox",
             status_code=303,
         )
 
@@ -600,56 +618,32 @@ def create_platform_workspace_router(manifest: PlatformManifest) -> APIRouter:
     @router.post("/connections")
     async def add_connection(request: Request) -> RedirectResponse:
         form = await request.form()
-        kind = str(form.get("connection_kind") or "browser").strip()
+        kind = str(form.get("connection_kind") or "postiz").strip()
         display_name = str(form.get("display_name") or "").strip()
         external_id = str(form.get("external_account_id") or "").strip()
         username = str(form.get("username") or "").strip().lstrip("@")
-        browser_profile = str(form.get("browser_profile") or "").strip()
         integration_id = str(form.get("integration_id") or "").strip()
         is_default = str(form.get("is_default") or "").lower() in {"1", "true", "on"}
         try:
-            if kind == "browser":
-                capabilities = [str(value) for value in form.getlist("capabilities")]
-                if not external_id or not username or not browser_profile:
-                    raise ValueError("浏览器写入账号需要账号 ID、用户名和 Browser Profile")
-                if not capabilities:
-                    raise ValueError("至少选择一个浏览器写入能力")
-                if not set(capabilities) <= {
-                    PlatformCapability.COMMENT.value,
-                    PlatformCapability.DM.value,
-                }:
-                    raise ValueError("浏览器账号仅支持评论或私信能力")
-                declared_capabilities = {
-                    capability.value for capability in manifest.capabilities
-                }
-                if not set(capabilities) <= declared_capabilities:
-                    raise ValueError(f"平台 {platform_id} 未声明所选写入能力")
-                identity = external_id
-                metadata = {
-                    "kind": "managed_account",
-                    "username": username,
-                    "external_account_id": external_id,
-                    "browser_profile": browser_profile,
-                    "is_default": is_default,
-                }
-                connection_status = "connected"
-            elif kind == "postiz":
+            if kind == "postiz":
                 if manifest.metadata.get("publishing_bridge") != "postiz":
                     raise ValueError(f"平台 {platform_id} 未启用 Postiz 发布桥接")
-                if not integration_id:
-                    raise ValueError("Postiz connection 需要 integration ID")
+                if not integration_id or not external_id or not username:
+                    raise ValueError("Postiz connection 需要 integration ID、账号 ID 和用户名")
                 identity = integration_id
                 capabilities = [PlatformCapability.OWNED_PUBLISH.value]
                 metadata = {
                     "kind": "postiz",
                     "integration_id": integration_id,
+                    "username": username,
+                    "external_account_id": external_id,
                     "is_default": is_default,
                 }
                 connection_status = (
                     "connected" if _settings(request).postiz_api_key else "disconnected"
                 )
             else:
-                raise ValueError("未知的平台账号连接类型")
+                raise ValueError("仅支持基于 HTTP API 的 Postiz 连接")
 
             key_hash = hashlib.sha256(
                 f"{platform_id}:{kind}:{identity}".encode("utf-8")

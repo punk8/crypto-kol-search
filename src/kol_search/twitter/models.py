@@ -83,6 +83,7 @@ class XReadCapabilities(BaseModel):
     post_search: bool = True
     batch_user_lookup: bool = True
     user_timeline: bool = True
+    post_lookup: bool = False
     followings: bool = False
     verified_followers: bool = False
     trends: bool = False

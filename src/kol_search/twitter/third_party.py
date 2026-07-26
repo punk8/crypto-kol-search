@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTrend, XTweet
 from kol_search.twitter.base import TwitterBackendError
 
 
@@ -25,6 +25,9 @@ def _parse_user(data: dict[str, Any]) -> XAccount:
     entities = data.get("entities") or profile_bio.get("entities") or {}
     if not isinstance(entities, dict):
         entities = {}
+    verification = data.get("verification") or {}
+    if not isinstance(verification, dict):
+        verification = {}
 
     website_url: str | None = None
     for url_item in (entities.get("url") or {}).get("urls") or []:
@@ -32,6 +35,11 @@ def _parse_user(data: dict[str, Any]) -> XAccount:
             website_url = url_item.get("expanded_url") or url_item.get("url")
             if website_url:
                 break
+    website = data.get("website")
+    if isinstance(website, dict):
+        website = website.get("url") or website.get("expanded_url")
+    if website is not None and not isinstance(website, str):
+        website = None
     username = (
         data.get("username")
         or data.get("screen_name")
@@ -67,14 +75,26 @@ def _parse_user(data: dict[str, Any]) -> XAccount:
             or data.get("statuses_count")
             or data.get("statusesCount")
         ),
-        verified=bool(data.get("verified") or data.get("isVerified") or data.get("isBlueVerified")),
-        created_at=data.get("created_at") or data.get("createdAt"),
+        listed_count=_as_int(
+            data.get("listed_count")
+            or data.get("listedCount")
+            or data.get("listed")
+            or metrics.get("listed_count")
+        ),
+        verified=bool(
+            data.get("verified")
+            or data.get("isVerified")
+            or data.get("isBlueVerified")
+            or verification.get("verified")
+        ),
+        created_at=data.get("created_at") or data.get("createdAt") or data.get("joined"),
         profile_image_url=(
             data.get("profile_image_url")
             or data.get("profile_image_url_https")
             or data.get("profilePicture")
+            or data.get("avatar_url")
         ),
-        url=website_url or data.get("website"),
+        url=website_url or website,
         location=data.get("location"),
         entities=entities,
         protected=bool(data.get("protected", False)),
@@ -237,7 +257,10 @@ class ThirdPartyTwitterClient:
                 hint="See README.md for vendor configuration.",
             )
         self._base = base_url.rstrip("/") + "/"
-        self.capabilities = XReadCapabilities(user_search=supports_user_search)
+        self.capabilities = XReadCapabilities(
+            user_search=supports_user_search,
+            post_lookup=True,
+        )
         self._client = httpx.Client(
             headers={
                 api_key_header: api_key,
@@ -286,10 +309,13 @@ class ThirdPartyTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         params: dict[str, Any] = {"query": query, "max_results": max_results, "limit": max_results}
         if since_id:
             params["since_id"] = since_id
+        if start_time:
+            params["start_time"] = start_time
         payload = self._get("search/tweets", params=params)
         items = self._extract_list(payload, ("data", "tweets", "results"))
         return [_parse_tweet(t) for t in items][:max_results]
@@ -336,6 +362,7 @@ class ThirdPartyTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         payload = self._get(
             f"users/{user_id}/tweets",
@@ -343,6 +370,7 @@ class ThirdPartyTwitterClient:
                 "max_results": max_results,
                 "limit": max_results,
                 "include_replies": str(include_replies).lower(),
+                **({"start_time": start_time} if start_time else {}),
             },
         )
         items = self._extract_list(payload, ("data", "tweets", "results"))
@@ -351,3 +379,21 @@ class ThirdPartyTwitterClient:
             if not p.author_id:
                 p.author_id = str(user_id)
         return posts[:max_results]
+
+    def get_tweet(self, tweet_id: str) -> XTweet | None:
+        payload = self._get(f"tweets/{tweet_id}")
+        items = self._extract_list(payload, ("data", "tweets", "results"))
+        if items:
+            return _parse_tweet(items[0])
+        if isinstance(payload, dict) and payload.get("id"):
+            return _parse_tweet(payload)
+        return None
+
+    def get_trends(
+        self,
+        max_results: int = 20,
+        *,
+        category: str | None = None,
+        locale: str | None = None,
+    ) -> list[XTrend]:
+        return []

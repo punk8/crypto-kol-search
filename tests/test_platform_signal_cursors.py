@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 from kol_search.platforms import PlatformRegistry
-from kol_search.platforms.x import XTweet, create_x_plugin
+from kol_search.platforms.x import XTrendTweet, XTweet, create_x_plugin
 from kol_search.platforms.xiaohongshu import (
     XiaohongshuComment,
     XiaohongshuNote,
@@ -109,21 +109,11 @@ def test_x_signal_scan_uses_native_handle_without_replacing_stable_cursor_id():
     assert observed == [("123456", "alice")]
 
 
-def test_x_signal_scan_resolves_opencli_ids_for_official_timelines():
-    observed: list[tuple[str, str]] = []
+def test_x_signal_scan_passes_incremental_cursors_to_timeline_and_trend_search():
+    observed: dict[str, str | None] = {}
 
     class Reader:
-        name = "official+opencli"
-
-        def get_users_by_usernames(self, usernames):  # noqa: ANN001, ANN202
-            assert usernames == ["alice"]
-            return [
-                SimpleNamespace(
-                    external_id="123456",
-                    username="alice",
-                    source_provider="official",
-                )
-            ]
+        name = "incremental-test"
 
         def get_user_tweets(  # noqa: ANN202
             self,
@@ -131,9 +121,38 @@ def test_x_signal_scan_resolves_opencli_ids_for_official_timelines():
             _limit,  # noqa: ANN001
             *,
             username,  # noqa: ANN001
+            start_time=None,  # noqa: ANN001
         ):
-            observed.append((external_id, username))
+            observed["timeline"] = start_time
             return []
+
+        def get_trends(self, _limit):  # noqa: ANN001, ANN202
+            return [SimpleNamespace(name="#AI", rank=1, post_count=100)]
+
+        def search_tweets(  # noqa: ANN202
+            self,
+            _query,  # noqa: ANN001
+            _limit,  # noqa: ANN001
+            *,
+            start_time=None,  # noqa: ANN001
+        ):
+            observed["trends"] = start_time
+            return [
+                SimpleNamespace(
+                    external_id="trend-old",
+                    author_id="author-1",
+                    author_username="alice",
+                    text="#AI old",
+                    created_at="2026-07-22T10:30:00Z",
+                ),
+                SimpleNamespace(
+                    external_id="trend-new",
+                    author_id="author-1",
+                    author_username="alice",
+                    text="#AI new",
+                    created_at="2026-07-22T12:30:00Z",
+                ),
+            ]
 
     registry = PlatformRegistry(
         [create_x_plugin(SimpleNamespace(), client_factory=Reader)]
@@ -142,14 +161,27 @@ def test_x_signal_scan_resolves_opencli_ids_for_official_timelines():
         "x",
         "scan_signals",
         payload={
-            "account_external_ids": ["opencli:alice"],
-            "account_targets": [{"id": "opencli:alice", "handle": "alice"}],
-            "include_trends": False,
+            "account_external_ids": ["account-a"],
+            "account_targets": [{"id": "account-a", "handle": "alice"}],
+            "include_trends": True,
+            "cursor": _cursor(
+                **{
+                    "account-a": "2026-07-22T11:00:00Z",
+                    "__trend_tweets__": "2026-07-22T12:00:00Z",
+                }
+            ),
         },
     )
 
-    assert result.success is True
-    assert observed == [("123456", "alice")]
+    links = [item for item in result.items if isinstance(item, XTrendTweet)]
+    assert observed == {
+        "timeline": "2026-07-22T11:00:00Z",
+        "trends": "2026-07-22T12:00:00Z",
+    }
+    assert [link.tweet.external_id for link in links] == ["trend-new"]
+    assert json.loads(result.cursor or "")["accounts"]["__trend_tweets__"] == (
+        "2026-07-22T12:30:00Z"
+    )
 
 
 def test_xiaohongshu_signal_cursor_filters_old_notes_and_is_isolated_per_account():

@@ -1,7 +1,7 @@
 -- KOL Growth OS uses a private schema and direct PostgreSQL connections.
 -- It is intentionally not exposed through Supabase Data API/PostgREST.
 create schema if not exists kol_search;
-revoke all on schema kol_search from public, anon, authenticated;
+revoke all on schema kol_search from public;
 grant usage, create on schema kol_search to postgres;
 set search_path = kol_search, public;
 
@@ -421,7 +421,7 @@ create table xhs_trends (
 );
 create index idx_xhs_trends_latest on xhs_trends(id, captured_at desc);
 
-revoke all on all tables in schema kol_search from public, anon, authenticated;
-revoke all on all sequences in schema kol_search from public, anon, authenticated;
+revoke all on all tables in schema kol_search from public;
+revoke all on all sequences in schema kol_search from public;
 grant all privileges on all tables in schema kol_search to postgres;
 grant all privileges on all sequences in schema kol_search to postgres;

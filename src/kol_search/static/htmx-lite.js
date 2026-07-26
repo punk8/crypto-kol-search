@@ -1,6 +1,21 @@
 /* Local, dependency-free subset used by this app: hx-get + periodic trigger + target/swap. */
 (() => {
   const bind = (root = document) => {
+    root.querySelectorAll('[hx-get]:not([hx-trigger])').forEach((el) => {
+      if (el.dataset.hxBound) return;
+      el.dataset.hxBound = '1';
+      el.addEventListener('click', async (event) => {
+        event.preventDefault();
+        const response = await fetch(el.getAttribute('hx-get'), {headers: {'HX-Request': 'true'}});
+        if (!response.ok) return;
+        const html = await response.text();
+        const target = document.querySelector(el.getAttribute('hx-target')) || el;
+        if (el.getAttribute('hx-swap') === 'outerHTML') {
+          target.outerHTML = html;
+          bind(document);
+        } else { target.innerHTML = html; bind(target); }
+      });
+    });
     root.querySelectorAll('[hx-get][hx-trigger^="every "]').forEach((el) => {
       if (el.dataset.hxBound) return;
       el.dataset.hxBound = '1';

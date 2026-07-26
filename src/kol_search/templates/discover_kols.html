@@ -1,0 +1,162 @@
+<div class="discover-page" id="kols">
+  <header class="page-heading page-heading--compact">
+    <div>
+      <p class="page-kicker">PLATFORM-SCOPED DISCOVERY</p>
+      <h1>KOL Discover</h1>
+      <p>Discover and rank domain experts inside one platform at a time.</p>
+    </div>
+    <div class="heading-actions">
+      <span class="mock-pill"><i></i>{{ data_mode }}</span>
+      <span class="semantic-note">ⓘ {{ "X requires a live API connection" if source_requires_live_data else selected_kol.comparison_note }}</span>
+    </div>
+  </header>
+
+  <nav class="platform-tabs" aria-label="Select KOL platform">
+    {% for item in platforms %}
+    <a href="/kols?platform={{ item.id }}" class="{{ 'is-active' if selected_platform == item.id else '' }}">
+      <span class="source-mark source-mark--{{ item.tone }}">{{ item.mark }}</span>{{ item.name }}
+      {% if selected_platform == item.id %}<small>Selected</small>{% endif %}
+    </a>
+    {% endfor %}
+  </nav>
+
+  {% if selected_platform == "x" %}
+  <nav class="hot-domain-tabs kol-board-tabs" aria-label="Managed KOL boards">
+    {% for domain in discovery_domains %}
+    <a href="/kols?platform=x&domain={{ domain.key }}" class="{{ 'is-active' if selected_kol_domain == domain.key else '' }}">{{ domain.name }}</a>
+    {% endfor %}
+    <span>Automatically refreshed boards</span>
+  </nav>
+  {% endif %}
+
+  {% if selected_platform == "x" %}
+  <form class="control-bar kol-controls" action="/kols" method="get">
+    <input type="hidden" name="platform" value="x">
+    <label class="control-field control-field--wide kol-domain-input"><span>Domain</span><input type="search" name="domain" value="{{ kol_domain or 'AI agents' }}" maxlength="120" required></label>
+    <div class="control-field"><span>Platform</span><strong>X only</strong></div>
+    <div class="control-field"><span>Scoring</span><strong>Internal v1</strong></div>
+    <div class="control-field"><span>Evidence</span><strong>Profile + content</strong></div>
+    <button type="submit" class="primary-button">Discover KOLs</button>
+  </form>
+  {% endif %}
+
+  {% if source_requires_live_data %}
+  <section class="panel live-source-empty">
+    <i class="source-mark source-mark--slate">X</i>
+    <div>
+      <p class="page-kicker">{{ "NO QUALIFIED CANDIDATES" if x_live_provider else "LIVE DATA REQUIRED" }}</p>
+      <h2>{{ "No evidence-backed X accounts found" if x_live_provider else "No fabricated X accounts" }}</h2>
+      <p>{{ x_live_empty_reason or x_live_error or "Connect the server-side X ingestion pipeline to populate candidates, scores, and recent posts." }}</p>
+    </div>
+    <a class="primary-button" href="/platforms/x">Configure X source</a>
+  </section>
+  {% else %}
+  {% if selected_platform != "x" %}<div class="control-bar kol-controls">
+    <div class="control-field control-field--wide"><span>Domain</span><strong>AI Coding</strong></div>
+    <div class="control-field"><span>Language</span><strong>All</strong></div>
+    <div class="control-field"><span>Locale</span><strong>All</strong></div>
+    <div class="control-field"><span>Evidence</span><strong>High + Medium</strong></div>
+    <div class="control-field"><span>Activity</span><strong>Last 30 days</strong></div>
+    <button type="button" class="primary-button" data-mock-apply>Apply</button>
+    <span class="filter-feedback" data-filter-feedback hidden role="status"></span>
+  </div>{% endif %}
+
+  <div class="kol-layout">
+    <aside class="panel kol-ranking">
+      <header><span>Sort by: <strong>{{ selected_kol.score_label }} (High to Low)</strong></span><small>1–{{ kols|length }} of {{ kol_result_total or 245 }} results</small></header>
+      <div class="kol-list">
+        {% for item in kols %}
+        <a href="/kols?platform={{ selected_platform }}&kol={{ item.id }}" class="kol-row {{ 'is-selected' if item.id == selected_kol.id else '' }}">
+          <b class="rank-number">{{ loop.index }}</b>
+          <i class="kol-avatar kol-avatar--{{ item.tone }}">{{ item.initials }}</i>
+          <span class="kol-row-copy"><strong>{{ item.name }}</strong><small>{{ item.handle }}</small><em>{% for topic in item.topics %}<i>{{ topic }}</i>{% endfor %}</em></span>
+          <span class="kol-row-score"><small>{{ selected_kol.score_label }}</small><strong>{{ item.score }}<i>/100</i></strong><em>{{ item.confidence }} confidence</em></span>
+          <span class="kol-row-activity"><small>Active</small>{{ item.activity }}</span>
+        </a>
+        {% endfor %}
+      </div>
+      <footer>Every candidate above is a {{ platform.name }} account. No cross-platform identity merge is performed.</footer>
+    </aside>
+
+    <section class="panel kol-detail">
+      <header class="kol-profile-header">
+        <i class="kol-avatar kol-avatar--{{ selected_kol.tone }} kol-avatar--large">{{ selected_kol.initials }}</i>
+        <div class="kol-profile-copy">
+          <span class="platform-context"><i class="source-mark source-mark--{{ platform.tone }}">{{ platform.mark }}</i>{{ platform.name }} account</span>
+          <h2>{% if selected_kol.profile_url %}<a href="{{ selected_kol.profile_url }}" target="_blank" rel="noreferrer">{{ selected_kol.name }}</a>{% else %}{{ selected_kol.name }}{% endif %}</h2>
+          <p>{{ selected_kol.handle }} · Native ID {{ selected_kol.native_id }}</p>
+          <small>{{ selected_kol.description }}</small>
+          <span class="topic-list">{% for topic in selected_kol.topics %}<i>{{ topic }}</i>{% endfor %}</span>
+        </div>
+        <div class="profile-score">
+          <small>{{ selected_kol.score_label }}</small>
+          <strong>{{ selected_kol.score }}<i>/100</i></strong>
+          <span>{{ selected_kol.confidence }} confidence</span>
+          {% if selected_platform == "x" %}
+          <form action="/kols/watchlist" method="post">
+            <input type="hidden" name="platform" value="x">
+            <input type="hidden" name="native_id" value="{{ selected_kol.native_id }}">
+            <input type="hidden" name="domain" value="{{ kol_domain or '' }}">
+            <button type="submit" class="primary-button">＋ {{ selected_kol.watchlist_label }}</button>
+          </form>
+          {% else %}
+          <button
+            type="button"
+            class="primary-button"
+            data-watchlist-button
+            data-platform="{{ selected_platform }}"
+            data-kol-id="{{ selected_kol.id }}"
+            data-add-label="＋ {{ selected_kol.watchlist_label }}"
+            data-added-label="✓ Added to {{ platform.name }} Watchlist"
+            aria-pressed="false"
+          >＋ {{ selected_kol.watchlist_label }}</button>
+          {% endif %}
+        </div>
+      </header>
+
+      <div class="metric-grid">
+        {% for label in selected_kol.metric_labels %}
+        <article><span>{{ label }}</span><strong>{{ selected_kol.metric_values[loop.index0] }}</strong><small>{{ 'High' if loop.index != 3 else 'Consistent' }}</small></article>
+        {% endfor %}
+      </div>
+
+      <div class="kol-detail-grid">
+        <section class="score-breakdown">
+          <h3>{{ selected_kol.score_label }} breakdown</h3>
+          {% for label, value in selected_kol.components %}
+          <div class="score-line {{ 'score-line--risk' if label == 'Risk' else '' }}"><span>{{ label }}</span><i><b style="--score-width:{{ value }}%"></b></i><strong>{{ value }}</strong></div>
+          {% endfor %}
+          <p>Scores are out of 100 and comparable only inside {{ platform.name }}.</p>
+        </section>
+
+        <section class="recent-content">
+          <div class="subsection-heading"><h3>{{ selected_kol.content_label }}</h3><a href="#">View all ↗</a></div>
+          <div class="recent-content-grid">
+            {% for entry in selected_kol.recent %}
+            {% set title = entry.title if entry.title is defined else entry[0] %}
+            {% set meta = entry.meta if entry.meta is defined else entry[1] %}
+            {% set kind = entry.kind if entry.kind is defined else entry[2] %}
+            <article>
+              <div class="content-thumb content-thumb--{{ loop.index }}"><span>{{ kind }}</span><i>▶</i></div>
+              <strong>{% if entry.url is defined and entry.url %}<a href="{{ entry.url }}" target="_blank" rel="noreferrer">{{ title }}</a>{% else %}{{ title }}{% endif %}</strong><small>{{ meta }}</small>
+            </article>
+            {% endfor %}
+          </div>
+        </section>
+      </div>
+
+      <div class="kol-evidence-grid">
+        <section>
+          <div class="subsection-heading"><h3>Platform metrics ({{ platform.name }})</h3></div>
+          {% for label in selected_kol.metric_labels %}<p><span>{{ label }}</span><strong>{{ selected_kol.metric_values[loop.index0] }}</strong></p>{% endfor %}
+        </section>
+        <section>
+          <div class="subsection-heading"><h3>Evidence</h3><a href="#">View all</a></div>
+          {% for label, confidence in selected_kol.evidence %}<p><span>▣ {{ label }}</span><em class="evidence-confidence evidence-confidence--{{ confidence|lower }}">{{ confidence }}</em></p>{% endfor %}
+        </section>
+        <section class="sync-card"><div class="subsection-heading"><h3>Last synced</h3><b>↻</b></div><strong>{{ selected_kol.last_synced }}</strong><p>{{ selected_kol.provider or "Mock HTTP provider" }}</p><small>{{ selected_kol.score_version or "Window: Last 30 days" }}</small></section>
+      </div>
+    </section>
+  </div>
+  {% endif %}
+</div>
