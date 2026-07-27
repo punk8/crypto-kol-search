@@ -86,6 +86,10 @@ class GetXApiClient:
         self._estimated_credits_per_call = max(
             0.0, float(estimated_credits_per_call)
         )
+        # GetXAPI's account endpoint currently reports wallet credits but omits
+        # active Starter / subscription plan credits. Only a billable HTTP 402
+        # is therefore authoritative evidence that all usable credit is gone.
+        self._upstream_balance_exhausted = False
         self.warnings: list[str] = []
         self._client = httpx.Client(
             headers={
@@ -140,6 +144,13 @@ class GetXApiClient:
 
         if response is None:
             raise TwitterBackendError("GetXAPI request did not produce a response.")
+        if billable and response.status_code == 402:
+            self._upstream_balance_exhausted = True
+            raise TwitterBackendError(
+                "GetXAPI credit balance exhausted.",
+                status_code=402,
+                hint="Top up the provider account or wait for plan credits to renew.",
+            )
         if response.status_code >= 400:
             raise TwitterBackendError(
                 "GetXAPI request failed.",
@@ -154,6 +165,8 @@ class GetXApiClient:
             raise TwitterBackendError("GetXAPI returned an unexpected response shape.")
         if payload.get("status") == "error" or payload.get("error"):
             raise TwitterBackendError("GetXAPI returned an application error.")
+        if billable:
+            self._upstream_balance_exhausted = False
         return payload
 
     def _refresh_account_status(self, *, force: bool = False) -> dict[str, Any] | None:
@@ -176,25 +189,11 @@ class GetXApiClient:
         if self._state_store is None:
             return
         try:
-            status = self._refresh_account_status()
+            self._refresh_account_status()
         except TwitterBackendError:
-            status = self._state_store.account_status(self.name)
             warning = "GetXAPI balance check was unavailable"
             if warning not in self.warnings:
                 self.warnings.append(warning)
-        credits = self._optional_float(
-            status.get("credits_remaining") if status else None
-        )
-        credits = max(0.0, credits) if credits is not None else None
-        if (
-            credits is not None
-            and credits - self._estimated_credits_per_call < self._min_credits
-        ):
-            raise TwitterBackendError(
-                "GetXAPI minimum credit reserve reached.",
-                status_code=402,
-                hint="Top up the provider account or lower GET_X_API_MIN_CREDITS.",
-            )
         if not self._state_store.reserve_calls(
             self.name, units=1, daily_limit=self._daily_call_limit
         ):
@@ -238,21 +237,25 @@ class GetXApiClient:
         )
         if used >= self._daily_call_limit:
             state = "budget_exhausted"
-        elif (
-            credits is not None
-            and credits - self._estimated_credits_per_call < self._min_credits
-        ):
+        elif self._upstream_balance_exhausted:
             state = "low_balance"
         elif error and status is None:
             state = "unavailable"
         else:
             state = "healthy"
+        # A zero from /account/me is only the wallet balance. Returning it as
+        # total remaining credit causes active plan credits to be misreported.
+        reported_credits = (
+            None
+            if credits == 0 and not self._upstream_balance_exhausted
+            else credits
+        )
         return {
             "provider": self.name,
             "state": state,
             "requests_today": used,
             "daily_limit": self._daily_call_limit,
-            "credits_remaining": credits,
+            "credits_remaining": reported_credits,
             "credits_used": credits_used,
             "upstream_total_requests": upstream_requests,
             "observed_at": status.get("observed_at") if status else None,

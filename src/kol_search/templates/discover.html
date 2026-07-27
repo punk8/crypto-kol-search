@@ -47,6 +47,8 @@
       <small>
         {% if x_provider_usage.credits_remaining is not none %}
         {{ x_provider_usage.credits_remaining|round(4) }} credits remaining
+        {% elif x_provider_usage.state == "healthy" %}
+        Plan balance verified on live calls
         {% else %}
         Balance unavailable
         {% endif %}

@@ -73,9 +73,12 @@ Put the service behind TLS and a process supervisor. Restrict inbound traffic
 to the Vercel frontend where practical. FxEmbed is attempted first for
 supported public lookups and GetXAPI fills the search/discovery gaps; FxEmbed
 is not an availability-guaranteed production source. The daily GetXAPI call
-limit resets at UTC midnight. The minimum
-credit reserve prevents a billable request from starting when the last known
-balance is below the configured threshold.
+limit resets at UTC midnight. GetXAPI's account endpoint does not expose active
+subscription-plan credits, so a zero wallet balance must not pre-block paid
+reads. The backend marks the provider balance exhausted only after an actual
+billable request returns HTTP 402; the daily call limit remains the
+authoritative local spend guard. `GET_X_API_MIN_CREDITS` is retained only for
+configuration compatibility.
 
 Choose one provider-state deployment mode:
 

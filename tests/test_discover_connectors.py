@@ -255,7 +255,7 @@ def test_getxapi_enforces_daily_budget_and_caches_balance_check(tmp_path) -> Non
     assert usage["credits_remaining"] == pytest.approx(0.998)
 
 
-def test_getxapi_stops_before_billable_call_when_balance_is_low(tmp_path) -> None:
+def test_getxapi_allows_plan_call_when_wallet_balance_is_zero(tmp_path) -> None:
     billable_calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -263,10 +263,13 @@ def test_getxapi_stops_before_billable_call_when_balance_is_low(tmp_path) -> Non
         if request.url.path == "/account/me":
             return httpx.Response(
                 200,
-                json={"credits_remaining": 0.005, "total_requests": 10},
+                json={"credits_remaining": 0, "total_requests": 10},
             )
         billable_calls += 1
-        return httpx.Response(200, json={"trends": []})
+        return httpx.Response(
+            200,
+            json={"trends": [{"name": "OpenAI", "rank": 1}]},
+        )
 
     state = ProviderStateStore(tmp_path / "low-balance.db")
     client = GetXApiClient(
@@ -281,16 +284,55 @@ def test_getxapi_stops_before_billable_call_when_balance_is_low(tmp_path) -> Non
         transport=httpx.MockTransport(handler),
     )
     try:
-        with pytest.raises(TwitterBackendError, match="minimum credit reserve"):
+        assert client.get_trends(1)
+        usage = client.usage_status()
+    finally:
+        client.close()
+        state.close()
+
+    assert billable_calls == 1
+    assert usage["state"] == "healthy"
+    assert usage["requests_today"] == 1
+    assert usage["credits_remaining"] is None
+
+
+def test_getxapi_marks_balance_low_only_after_upstream_402(tmp_path) -> None:
+    billable_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal billable_calls
+        if request.url.path == "/account/me":
+            return httpx.Response(
+                200,
+                json={"credits_remaining": 0, "total_requests": 10},
+            )
+        billable_calls += 1
+        return httpx.Response(402, json={"error": "Insufficient credits"})
+
+    state = ProviderStateStore(tmp_path / "exhausted-balance.db")
+    client = GetXApiClient(
+        "secret",
+        state_store=state,
+        daily_call_limit=100,
+        min_credits=0.01,
+    )
+    client._client.close()  # noqa: SLF001
+    client._client = httpx.Client(  # noqa: SLF001
+        base_url="https://api.getxapi.com",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(TwitterBackendError, match="credit balance exhausted"):
             client.get_trends(1)
         usage = client.usage_status()
     finally:
         client.close()
         state.close()
 
-    assert billable_calls == 0
+    assert billable_calls == 1
     assert usage["state"] == "low_balance"
-    assert usage["requests_today"] == 0
+    assert usage["requests_today"] == 1
+    assert usage["credits_remaining"] == 0
 
 
 def test_getxapi_projects_balance_between_cached_account_checks(tmp_path) -> None:
@@ -320,9 +362,7 @@ def test_getxapi_projects_balance_between_cached_account_checks(tmp_path) -> Non
         transport=httpx.MockTransport(handler),
     )
     try:
-        for _ in range(4):
-            client.get_trends(1)
-        with pytest.raises(TwitterBackendError, match="minimum credit reserve"):
+        for _ in range(5):
             client.get_trends(1)
         usage = client.usage_status()
     finally:
@@ -330,10 +370,10 @@ def test_getxapi_projects_balance_between_cached_account_checks(tmp_path) -> Non
         state.close()
 
     assert account_checks == 1
-    assert billable_calls == 4
-    assert usage["state"] == "low_balance"
-    assert usage["requests_today"] == 4
-    assert usage["credits_remaining"] == pytest.approx(0.011)
+    assert billable_calls == 5
+    assert usage["state"] == "healthy"
+    assert usage["requests_today"] == 5
+    assert usage["credits_remaining"] == pytest.approx(0.010)
 
 
 def test_x_connector_falls_back_without_changing_frontend_schema(monkeypatch) -> None:
