@@ -151,7 +151,8 @@ def test_default_x_chain_and_budget_are_starter_safe():
     assert settings.x_kol_discovery_cache_seconds == 3600
     assert settings.x_kol_discovery_limit == 8
     assert settings.x_kol_candidate_sample_size == 20
-    assert settings.x_kol_recent_posts_per_account == 2
+    assert settings.x_kol_recent_posts_per_account == 5
+    assert settings.x_kol_recent_posts_per_account >= 3
 
 
 def test_official_token_can_be_loaded_from_keychain():

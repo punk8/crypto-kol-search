@@ -85,7 +85,12 @@ class DiscoverAutomationService:
                         language=domain.languages[0] if len(domain.languages) == 1 else None,
                         limit=self.settings.x_kol_discovery_limit,
                         sample_size=self.settings.x_kol_candidate_sample_size,
-                        recent_posts_per_account=self.settings.x_kol_recent_posts_per_account,
+                        # High-confidence scoring requires at least three recent
+                        # posts. Preserve legacy settings while making the
+                        # autonomous enrollment path internally consistent.
+                        recent_posts_per_account=max(
+                            3, self.settings.x_kol_recent_posts_per_account
+                        ),
                         min_engagement=self.settings.x_kol_min_engagement,
                     )
                 )

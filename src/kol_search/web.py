@@ -942,7 +942,7 @@ def _enrich_live_kols(
             limit=max(1, min(settings.x_kol_discovery_limit, 50)),
             sample_size=max(5, min(settings.x_kol_candidate_sample_size, 100)),
             recent_posts_per_account=max(
-                1, min(settings.x_kol_recent_posts_per_account, 10)
+                3, min(settings.x_kol_recent_posts_per_account, 10)
             ),
             min_engagement=max(0, min(settings.x_kol_min_engagement, 100_000)),
         ),

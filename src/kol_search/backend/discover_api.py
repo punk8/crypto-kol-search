@@ -290,7 +290,7 @@ def search_platform_accounts(
     language: str | None = Query(default=None, max_length=20),
     limit: int = Query(default=12, ge=1, le=50),
     sample_size: int = Query(default=50, ge=5, le=100),
-    recent_posts_per_account: int = Query(default=3, ge=1, le=10),
+    recent_posts_per_account: int = Query(default=5, ge=1, le=10),
     min_engagement: int = Query(default=25, ge=0, le=100_000),
 ) -> AccountListResponse:
     connector = _connector(request, platform_id)

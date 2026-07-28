@@ -156,7 +156,7 @@ class AccountSearchQuery(BaseModel):
     language: str | None = Field(default=None, max_length=20)
     limit: int = Field(default=12, ge=1, le=50)
     sample_size: int = Field(default=50, ge=5, le=100)
-    recent_posts_per_account: int = Field(default=3, ge=1, le=10)
+    recent_posts_per_account: int = Field(default=5, ge=1, le=10)
     min_engagement: int = Field(default=25, ge=0, le=100_000)
 
 
@@ -193,7 +193,14 @@ class AccountSummary(BaseModel):
 
 
 class AccountScoreComponent(BaseModel):
-    key: Literal["relevance", "authority", "engagement", "consistency", "freshness"]
+    key: Literal[
+        "relevance",
+        "authority",
+        "engagement",
+        "consistency",
+        "freshness",
+        "credibility",
+    ]
     label: str
     score: int = Field(ge=0, le=100)
     weight: float = Field(ge=0, le=1)

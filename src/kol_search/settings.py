@@ -120,7 +120,7 @@ class Settings(BaseSettings):
         default=20, alias="KOL_X_KOL_CANDIDATE_SAMPLE_SIZE"
     )
     x_kol_recent_posts_per_account: int = Field(
-        default=2, alias="KOL_X_KOL_RECENT_POSTS_PER_ACCOUNT"
+        default=5, ge=1, le=10, alias="KOL_X_KOL_RECENT_POSTS_PER_ACCOUNT"
     )
     x_kol_min_engagement: int = Field(
         default=25, alias="KOL_X_KOL_MIN_ENGAGEMENT"

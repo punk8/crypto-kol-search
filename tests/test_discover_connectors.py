@@ -632,8 +632,114 @@ def test_x_kol_score_caps_sparse_evidence_and_uses_public_signals() -> None:
     assert sparse.score <= 64
     assert sparse.confidence == "Medium"
     assert supported.score > sparse.score
+    assert supported.score >= 75
     assert supported.confidence == "High"
-    assert len(supported.components) == 5
+    assert len(supported.components) == 6
+    assert {component.key for component in supported.components} == {
+        "relevance",
+        "authority",
+        "engagement",
+        "consistency",
+        "freshness",
+        "credibility",
+    }
+
+
+def test_x_kol_score_rewards_engagement_quality_over_raw_reach() -> None:
+    observed_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
+
+    def posts(account_id: str, *, engagement: int) -> list[XTweet]:
+        return [
+            XTweet(
+                id=f"{account_id}-{index}",
+                author_id=account_id,
+                author_username=account_id,
+                text="Practical AI agents evaluation and LLM research",
+                created_at="Sun Jul 26 09:00:00 +0000 2026",
+                like_count=engagement,
+            )
+            for index in range(5)
+        ]
+
+    specialist = XAccount(
+        id="specialist",
+        username="specialist",
+        description="AI agents researcher",
+        followers_count=25_000,
+        following_count=500,
+        tweet_count=2_000,
+        listed_count=100,
+        created_at="2020-01-01T00:00:00Z",
+    )
+    celebrity = XAccount(
+        id="celebrity",
+        username="celebrity",
+        description="AI agents researcher",
+        followers_count=2_000_000,
+        following_count=500,
+        tweet_count=2_000,
+        listed_count=10_000,
+        created_at="2020-01-01T00:00:00Z",
+    )
+    specialist_posts = posts("specialist", engagement=800)
+    celebrity_posts = posts("celebrity", engagement=100)
+
+    specialist_score = score_x_account(
+        specialist,
+        query="AI agents",
+        domain_posts=specialist_posts,
+        recent_posts=specialist_posts,
+        observed_at=observed_at,
+    )
+    celebrity_score = score_x_account(
+        celebrity,
+        query="AI agents",
+        domain_posts=celebrity_posts,
+        recent_posts=celebrity_posts,
+        observed_at=observed_at,
+    )
+
+    assert specialist_score.score > celebrity_score.score
+    assert specialist_score.confidence == "High"
+
+
+def test_x_kol_score_limits_low_credibility_follow_farm() -> None:
+    observed_at = datetime(2026, 7, 26, tzinfo=timezone.utc)
+    account = XAccount(
+        id="farm",
+        username="farm",
+        description="AI agents",
+        followers_count=100,
+        following_count=10_000,
+        tweet_count=5,
+        created_at="2026-07-20T00:00:00Z",
+    )
+    posts = [
+        XTweet(
+            id=str(index),
+            author_id="farm",
+            author_username="farm",
+            text="AI agents and LLM research",
+            created_at="Sun Jul 26 09:00:00 +0000 2026",
+            like_count=500,
+        )
+        for index in range(5)
+    ]
+
+    scored = score_x_account(
+        account,
+        query="AI agents",
+        domain_posts=posts,
+        recent_posts=posts,
+        observed_at=observed_at,
+    )
+
+    credibility = next(
+        component for component in scored.components if component.key == "credibility"
+    )
+    assert credibility.score < 30
+    assert scored.score <= 69
+    assert scored.confidence == "Medium"
 
 
 def test_x_kol_score_does_not_match_ai_inside_unrelated_words() -> None:
@@ -800,8 +906,8 @@ def test_discover_api_exposes_versioned_platform_contract(monkeypatch, tmp_path)
     assert search.status_code == 200 and search.json()["meta"]["provider"] == "mock"
     assert accounts.status_code == 200 and accounts.json()["total"] > 0
     assert accounts.json()["items"][0]["native_id"]
-    assert len(accounts.json()["items"][0]["score_components"]) == 5
-    assert accounts.json()["items"][0]["score_version"] == "x-kol-internal-v1"
+    assert len(accounts.json()["items"][0]["score_components"]) == 6
+    assert accounts.json()["items"][0]["score_version"] == "x-kol-internal-v2"
     assert tracked.status_code == 200
     assert tracked.json()["item"]["status"] == "active"
     assert active_accounts.status_code == 200

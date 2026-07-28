@@ -99,13 +99,19 @@ def test_multi_domain_candidates_require_two_qualified_runs_before_auto_enrollme
         observed_at=now,
     )
 
+    queries = []
+
     class Connector:
         def search_accounts(self, query):  # noqa: ANN001, ANN201
+            queries.append(query)
             return ConnectorResult(
                 items=(item,), provider="getxapi+fxembed", attempted_providers=("fxembed", "getxapi")
             )
 
-    service = DiscoverAutomationService(_settings(tmp_path), Connector())  # type: ignore[arg-type]
+    service = DiscoverAutomationService(
+        _settings(tmp_path, KOL_X_KOL_RECENT_POSTS_PER_ACCOUNT=2),
+        Connector(),  # type: ignore[arg-type]
+    )
     service.repository.upsert_account(
         XAccount(external_id="7", username="alice", source_provider="getxapi")
     )
@@ -123,6 +129,8 @@ def test_multi_domain_candidates_require_two_qualified_runs_before_auto_enrollme
     assert second[0]["status"] == "active"
     assert second[0]["consecutive_qualified"] == 2
     assert account is not None and account["status"] == "active"
+    assert queries
+    assert all(query.recent_posts_per_account >= 3 for query in queries)
 
 
 def test_hot_content_uses_repeat_metric_snapshots_for_velocity(tmp_path) -> None:
