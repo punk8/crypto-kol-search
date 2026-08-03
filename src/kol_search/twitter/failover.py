@@ -84,9 +84,23 @@ class FailoverTwitterClient:
         return self._call("search_users", query, max_results=max_results)
 
     def search_tweets(
-        self, query: str, max_results: int = 40, since_id: str | None = None
+        self,
+        query: str,
+        max_results: int = 40,
+        since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
-        return self._call("search_tweets", query, max_results=max_results, since_id=since_id)
+        kwargs: dict[str, Any] = {
+            "max_results": max_results,
+            "since_id": since_id,
+        }
+        if start_time:
+            kwargs["start_time"] = start_time
+        return self._call(
+            "search_tweets",
+            query,
+            **kwargs,
+        )
 
     def get_user_by_username(self, username: str) -> XAccount | None:
         return self._call("get_user_by_username", username)
@@ -101,21 +115,25 @@ class FailoverTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
+        kwargs: dict[str, Any] = {
+            "max_results": max_results,
+            "username": username,
+            "include_replies": include_replies,
+        }
+        if start_time:
+            kwargs["start_time"] = start_time
         if user_id.startswith("opencli:") and self.fallback.capabilities.user_timeline:
             self.diagnostics["backend_calls"][self.fallback.name] += 1
             return self.fallback.get_user_tweets(
                 user_id,
-                max_results=max_results,
-                username=username,
-                include_replies=include_replies,
+                **kwargs,
             )
         return self._call(
             "get_user_tweets",
             user_id,
-            max_results=max_results,
-            username=username,
-            include_replies=include_replies,
+            **kwargs,
         )
 
     def get_followings(self, username: str, max_results: int = 20) -> list[XAccount]:

@@ -155,6 +155,7 @@ KOL_X_SIGNAL_INTERVAL_MINUTES=5  # 可选：仅覆盖 X 的信号扫描周期
 KOL_XIAOHONGSHU_SIGNAL_INTERVAL_MINUTES=30  # 可选：仅覆盖小红书
 KOL_X_TRENDS_PER_SCAN=5  # 每轮组合查询覆盖的近期 Trend 数
 KOL_X_TWEETS_PER_TREND=10  # 组合查询的目标单 Trend 推文数
+KOL_X_TREND_WOEID=1  # 官方 X Trends 地区；1 表示 Worldwide
 KOL_REVIEW_QUEUE_ENABLED=false  # 临界 KOL 留在 candidate 并持续自动重评
 KOL_PLATFORM_ACCOUNT_BATCH_SIZE=50
 KOL_ACTION_DISPATCH_SECONDS=60
@@ -177,7 +178,21 @@ OPENAI_MODEL=gpt-5.6-luna
 
 ### X
 
-读取后端支持 `official`、`twitterapi_io`、`opencli`、`third_party`、显式启用的 `twscrape` 和测试专用 `mock`。TwitterAPI.io 可在可恢复错误时于任务内切换到 OpenCLI；HTTP 400/404/422 不触发切换。
+读取后端支持 `official`、`twitterapi_io`、`opencli`、`third_party`、显式启用的 `twscrape` 和测试专用 `mock`。`official` 可通过 Bearer Token 读取 WOEID Trends、近期 Trend 推文、账号资料和 KOL 时间线，并把持久化扫描游标作为 `start_time` 传给官方接口。配置 OpenCLI fallback 后，可恢复错误会在任务内切换到 Browser Bridge；HTTP 400/404/422 不触发切换。
+
+### Agent 本地模型与 Telegram
+
+主动型 Agent 的模型与 Telegram 凭据只由 Mac Worker 读取。复制
+`config/agent-config.example.json` 到 `~/.config/kol-search/config.json`，填入真实值并执行：
+
+```bash
+chmod 600 ~/.config/kol-search/config.json
+export KOL_LIVE_WRITE_ENABLED=true
+kol-search worker
+```
+
+所有 Agent 共用这一个 OpenAI-compatible API key；数据库只保存 Agent 选择的模型名称、
+人设、目标和运行参数。修改本地 JSON 后必须重启 Worker。不要把真实配置复制回项目目录。
 
 ### 小红书
 

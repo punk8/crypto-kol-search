@@ -285,4 +285,127 @@ MIGRATIONS: tuple[Migration, ...] = (
             ON automation_worker_heartbeats(last_seen_at DESC);
         """,
     ),
+    Migration(
+        8,
+        "agent_accounts_and_activity",
+        """
+        CREATE TABLE automation_agents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            platform_id TEXT NOT NULL,
+            native_account_id TEXT NOT NULL,
+            native_username TEXT NOT NULL,
+            reply_connection_id INTEGER NOT NULL,
+            publish_connection_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft'
+                CHECK(status IN ('draft', 'running', 'paused', 'auto_paused', 'archived')),
+            current_config_version_id INTEGER,
+            pause_reason TEXT NOT NULL DEFAULT '',
+            last_scan_at TEXT,
+            next_scan_at TEXT,
+            scan_cursor TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(platform_id, native_account_id),
+            UNIQUE(reply_connection_id),
+            UNIQUE(publish_connection_id),
+            FOREIGN KEY(reply_connection_id) REFERENCES automation_platform_connections(id),
+            FOREIGN KEY(publish_connection_id) REFERENCES automation_platform_connections(id)
+        );
+        CREATE INDEX idx_automation_agents_status
+            ON automation_agents(status, next_scan_at, id);
+
+        CREATE TABLE automation_agent_config_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(agent_id, version),
+            FOREIGN KEY(agent_id) REFERENCES automation_agents(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_automation_agent_configs
+            ON automation_agent_config_versions(agent_id, version DESC);
+
+        CREATE TABLE automation_agent_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info'
+                CHECK(severity IN ('info', 'warning', 'critical')),
+            title TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(agent_id) REFERENCES automation_agents(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_automation_agent_events_timeline
+            ON automation_agent_events(agent_id, created_at DESC, id DESC);
+
+        CREATE TABLE automation_agent_commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id INTEGER NOT NULL,
+            command_type TEXT NOT NULL CHECK(command_type IN ('scan_now', 'post_now')),
+            status TEXT NOT NULL DEFAULT 'queued'
+                CHECK(status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+            requested_by TEXT NOT NULL,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            FOREIGN KEY(agent_id) REFERENCES automation_agents(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_automation_agent_commands_queue
+            ON automation_agent_commands(status, created_at, id);
+
+        CREATE TABLE automation_action_metrics (
+            action_id INTEGER NOT NULL,
+            window_hours INTEGER NOT NULL CHECK(window_hours IN (24, 72)),
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            captured_at TEXT NOT NULL,
+            PRIMARY KEY(action_id, window_hours),
+            FOREIGN KEY(action_id) REFERENCES automation_actions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE automation_agent_metric_snapshots (
+            agent_id INTEGER NOT NULL,
+            captured_at TEXT NOT NULL,
+            followers_count INTEGER,
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY(agent_id, captured_at),
+            FOREIGN KEY(agent_id) REFERENCES automation_agents(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_automation_agent_metric_snapshots
+            ON automation_agent_metric_snapshots(agent_id, captured_at DESC);
+
+        CREATE TABLE automation_agent_runtime_status (
+            worker_id TEXT PRIMARY KEY,
+            model_ready INTEGER NOT NULL DEFAULT 0 CHECK(model_ready IN (0, 1)),
+            telegram_ready INTEGER NOT NULL DEFAULT 0 CHECK(telegram_ready IN (0, 1)),
+            write_ready INTEGER NOT NULL DEFAULT 0 CHECK(write_ready IN (0, 1)),
+            allowed_models_json TEXT NOT NULL DEFAULT '[]',
+            config_error TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE automation_agent_defaults (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            config_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+        );
+
+        ALTER TABLE automation_opportunities ADD COLUMN agent_id INTEGER
+            REFERENCES automation_agents(id) ON DELETE SET NULL;
+        ALTER TABLE automation_opportunities ADD COLUMN agent_config_version_id INTEGER
+            REFERENCES automation_agent_config_versions(id) ON DELETE SET NULL;
+        ALTER TABLE automation_actions ADD COLUMN agent_id INTEGER
+            REFERENCES automation_agents(id) ON DELETE SET NULL;
+        ALTER TABLE automation_actions ADD COLUMN agent_config_version_id INTEGER
+            REFERENCES automation_agent_config_versions(id) ON DELETE SET NULL;
+        CREATE INDEX idx_automation_actions_agent_timeline
+            ON automation_actions(agent_id, created_at DESC, id DESC);
+        """,
+    ),
 )

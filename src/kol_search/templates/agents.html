@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Agent · KOL Growth OS{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/agents.css">{% endblock %}
+{% block content %}
+{% set status_labels = {
+  "draft": "待启用", "running": "运行中", "paused": "已暂停",
+  "auto_paused": "自动暂停", "archived": "已归档"
+} %}
+<div class="agent-page">
+  <section class="agent-center-head">
+    <div><p class="eyebrow">AUTONOMOUS SOCIAL AGENTS</p><h1>Agent</h1><p>查看每个公开社媒账号正在回复什么、发布什么，并统一管理它的运行边界。</p></div>
+    <a class="button ghost" href="{{ '/agents' if show_archived else '/agents?archived=true' }}">{{ '查看当前 Agent' if show_archived else '查看已归档' }}</a>
+  </section>
+
+  {% if not worker.online %}<div class="notice warning"><span>Mac Worker 当前离线。Agent 配置仍可查看，但不会扫描、生成或发布。</span></div>{% elif not runtime_ready %}<div class="notice warning"><span>Mac Worker 在线，但模型配置不可用：{{ runtime_status.config_error or '请检查本地 config.json' }}</span></div>{% endif %}
+
+  <section class="agent-grid" aria-label="Agent 列表">
+    {% for item in agents %}
+    <a class="agent-card agent-card--{{ item.status }}" href="/agents/{{ item.id }}">
+      <header><span class="agent-avatar">X</span><span><strong>{{ item.name }}</strong><small>@{{ item.native_username }} · {{ item.platform_id|upper }}</small></span><i class="agent-state">{{ status_labels.get(item.status, item.status) }}</i></header>
+      <div class="agent-card-health"><span>Postiz <b class="{{ item.publish_connection_status }}">{{ item.publish_connection_status }}</b></span><span>OpenCLI <b class="{{ item.reply_connection_status }}">{{ item.reply_connection_status }}</b></span></div>
+      <div class="agent-card-metrics"><span><strong>{{ item.replies_today }}</strong>今日回复</span><span><strong>{{ item.posts_today }}</strong>今日原创</span><span><strong>{{ item.next_scan_at|local_datetime if item.next_scan_at else '—' }}</strong>下次扫描</span></div>
+      <footer><span>最近活动 {{ item.last_activity_at|local_datetime if item.last_activity_at else '暂无活动' }}</span><strong>进入 Agent →</strong></footer>
+    </a>
+    {% else %}
+    <div class="agent-empty"><strong>还没有 Agent</strong><p>先准备一个 OpenCLI 回复连接和一个 Postiz 发帖连接，再创建首个 Agent。</p></div>
+    {% endfor %}
+  </section>
+
+  {% if not show_archived %}
+  <section class="agent-create-panel" id="agent-defaults">
+    <div class="agent-section-heading"><div><p class="eyebrow">GLOBAL DEFAULTS</p><h2>全局运行默认</h2></div><span>继承中的 Agent 会立即获得新版本</span></div>
+    <form method="post" action="/agents/defaults" class="agent-form-grid agent-default-form">
+      {% for key, label in [('scan_interval_minutes','扫描间隔（分钟）'),('candidates_per_scan','每轮候选'),('replies_per_scan','每轮回复'),('post_freshness_hours','帖子时效（小时）'),('reply_hourly_limit','每小时回复'),('reply_daily_limit','每日回复'),('original_posts_daily','每日原创'),('author_cooldown_days','作者冷却（天）'),('failure_pause_threshold','失败暂停阈值'),('score_threshold','最低评分')] %}<label>{{ label }}<input type="number" name="{{ key }}" value="{{ defaults[key] }}"></label>{% endfor %}
+      <label>运行开始<input type="time" name="active_start" value="{{ defaults.active_start }}"></label><label>运行结束<input type="time" name="active_end" value="{{ defaults.active_end }}"></label>
+      <label>原创发布时间<textarea name="original_post_times">{{ defaults.original_post_times|join('\n') }}</textarea></label>
+      <div class="agent-form-actions agent-form-wide"><button class="button ghost" type="submit">保存全局默认</button></div>
+    </form>
+  </section>
+  <section class="agent-create-panel">
+    <div class="agent-section-heading"><div><p class="eyebrow">CREATE AGENT</p><h2>创建 Agent</h2></div><span>创建后默认暂停，不会立即发布</span></div>
+    {% if reply_connections and publish_connections %}
+    <form method="post" action="/agents" class="agent-form-grid">
+      <label>Agent 名称<input name="name" required placeholder="DeFi Researcher"></label>
+      <label>X 用户名<input name="native_username" required placeholder="defi_researcher"></label>
+      <label>X 账号 ID<input name="native_account_id" required placeholder="123456789"></label>
+      <label>模型名称{% if runtime_status.allowed_models %}<select name="model" required>{% for model in runtime_status.allowed_models %}<option value="{{ model }}">{{ model }}</option>{% endfor %}</select>{% else %}<input name="model" required placeholder="先启动配置完成的 Mac Worker">{% endif %}</label>
+      <label>OpenCLI 回复连接<select name="reply_connection_id" required>{% for row in reply_connections %}<option value="{{ row.id }}">{{ row.display_name }} · {{ row.status }}</option>{% endfor %}</select></label>
+      <label>Postiz 发帖连接<select name="publish_connection_id" required>{% for row in publish_connections %}<option value="{{ row.id }}">{{ row.display_name }} · {{ row.status }}</option>{% endfor %}</select></label>
+      <label class="agent-form-wide">专业领域<textarea name="expertise" rows="2">{{ defaults.expertise|join('\n') }}</textarea></label>
+      <label class="agent-form-wide">关键词<textarea name="keywords" rows="2" placeholder="stablecoin&#10;RWA&#10;DeFi"></textarea></label>
+      <input type="hidden" name="platform_id" value="x">
+      <div class="agent-form-actions agent-form-wide"><button class="button" type="submit">创建暂停中的 Agent</button></div>
+    </form>
+    {% else %}
+    <div class="agent-empty agent-empty--compact"><strong>缺少写入连接</strong><p>请先到<a href="/settings/brand#platform-connections">配置</a>添加 OpenCLI 评论连接与 Postiz 发帖连接。</p></div>
+    {% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

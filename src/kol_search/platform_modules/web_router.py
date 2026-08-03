@@ -636,13 +636,15 @@ def create_platform_workspace_router(manifest: PlatformManifest) -> APIRouter:
             elif kind == "postiz":
                 if manifest.metadata.get("publishing_bridge") != "postiz":
                     raise ValueError(f"平台 {platform_id} 未启用 Postiz 发布桥接")
-                if not integration_id:
-                    raise ValueError("Postiz connection 需要 integration ID")
+                if not integration_id or not external_id or not username:
+                    raise ValueError("Postiz connection 需要 integration ID、账号 ID 和用户名")
                 identity = integration_id
                 capabilities = [PlatformCapability.OWNED_PUBLISH.value]
                 metadata = {
                     "kind": "postiz",
                     "integration_id": integration_id,
+                    "username": username,
+                    "external_account_id": external_id,
                     "is_default": is_default,
                 }
                 connection_status = (

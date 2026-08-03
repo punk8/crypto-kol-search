@@ -158,12 +158,16 @@ class TwitterApiIoClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         # The provider currently recommends time-windowed queries instead of
         # cursor pagination for advanced search, so fetch one page intentionally.
+        effective_query = query
+        if start_time:
+            effective_query = f"{query} since:{start_time[:10]}"
         payload = self._get(
             "twitter/tweet/advanced_search",
-            params={"query": query, "queryType": "Latest"},
+            params={"query": effective_query, "queryType": "Latest"},
         )
         tweets = payload.get("tweets") or []
         if not isinstance(tweets, list):
@@ -193,6 +197,7 @@ class TwitterApiIoClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         target = max(1, min(max_results, 100))
         cursor = ""

@@ -3,28 +3,34 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 
 from kol_search.automation import (
     ActionStatus,
+    AgentStore,
     AutomationStore,
     StateTransitionError,
 )
+from kol_search.agent_runtime import AgentRuntimeService
+from kol_search.automation.agents import AgentConfig
 from kol_search.automation.service import (
     AutomationWorker,
     PlatformAutomationScheduler,
     PlatformAutomationService,
 )
 from kol_search.platforms import (
+    PlatformCapability,
     build_default_registry,
     install_registered_platform_schemas,
 )
@@ -41,14 +47,45 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
 
 
+def _local_datetime(value: Any, timezone_name: str = "Asia/Shanghai") -> str:
+    """Render stored ISO timestamps in the Agent's operating timezone."""
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        return str(value)
+
+
+templates.env.filters["local_datetime"] = _local_datetime
+
+
 class _QueueNotifier:
     def notify(self) -> None:
         """Web-only runtimes persist work for the external worker to poll."""
 
+
+class ReplyDraftRequest(BaseModel):
+    """Platform-neutral input for an interactive, reviewable reply draft."""
+
+    agent_id: int = Field(gt=0)
+    object_id: str = Field(min_length=1, max_length=200)
+    author_id: str = ""
+    author_username: str = ""
+    text: str = Field(min_length=1, max_length=4000)
+    url: str | None = None
+    trend: str = ""
+    language: str | None = None
+    metrics: dict[str, int] = Field(default_factory=dict)
+    manual_context: str = Field(default="", max_length=2400)
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     settings = get_settings()
-    externally_served = settings.runtime_mode == "web" or settings.web_host not in {
+    externally_served = settings.web_host not in {
         "127.0.0.1", "localhost", "::1"
     }
     if externally_served and not (
@@ -60,6 +97,7 @@ async def lifespan(application: FastAPI):
 
     database_target = settings.database_target()
     automation = AutomationStore(database_target)
+    automation.database.wait_ready()
     registry = build_default_registry(settings)
     install_registered_platform_schemas(database_target, registry)
     _install_platform_routers(application, registry)
@@ -67,6 +105,8 @@ async def lifespan(application: FastAPI):
     # PlatformAutomationService owns shared orchestration only. Platform-native
     # repositories resolve their database directly from Settings.
     platform_service = PlatformAutomationService(automation, registry, settings)
+    agent_store = AgentStore(automation)
+    agent_runtime: AgentRuntimeService | None = None
     if settings.runtime_mode == "web":
         platform_service.initialize_defaults()
         platform_worker: AutomationWorker | _QueueNotifier = _QueueNotifier()
@@ -74,13 +114,18 @@ async def lifespan(application: FastAPI):
     else:
         platform_service.initialize_connections()
         platform_worker = AutomationWorker(automation, platform_service)
-        scheduler = PlatformAutomationScheduler(platform_service, platform_worker, settings)
+        agent_runtime = AgentRuntimeService(automation, registry, settings)
+        scheduler = PlatformAutomationScheduler(
+            platform_service, platform_worker, settings, agent_runtime
+        )
 
     application.state.settings = settings
     application.state.automation = automation
     application.state.platform_registry = registry
     application.state.platform_service = platform_service
     application.state.platform_worker = platform_worker
+    application.state.agent_store = agent_store
+    application.state.agent_runtime = agent_runtime
     application.state.scheduler = scheduler
 
     if isinstance(platform_worker, AutomationWorker):
@@ -95,6 +140,7 @@ async def lifespan(application: FastAPI):
         if isinstance(platform_worker, AutomationWorker):
             platform_worker.stop()
         registry.close()
+        automation.database.close()
 
 
 app = FastAPI(title="KOL Growth OS", version="1.0.0", lifespan=lifespan)
@@ -129,6 +175,10 @@ def _automation(request: Request) -> AutomationStore:
 
 def _platform_service(request: Request) -> PlatformAutomationService:
     return request.app.state.platform_service
+
+
+def _agent_store(request: Request) -> AgentStore:
+    return request.app.state.agent_store
 
 
 def _actor(request: Request) -> str:
@@ -208,6 +258,69 @@ def logout() -> Response:
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie("kol_admin_session")
     return response
+
+
+@app.post("/api/v1/platforms/{platform_id}/reply-draft")
+def generate_reply_draft(
+    request: Request,
+    platform_id: str,
+    payload: ReplyDraftRequest,
+) -> dict[str, Any]:
+    """Generate a single reviewable reply without executing a platform write."""
+
+    normalized_platform = platform_id.strip().lower()
+    registry = request.app.state.platform_registry
+    plugin = registry.get(normalized_platform)
+    if plugin is None:
+        raise HTTPException(status_code=404, detail="平台未注册")
+    if not plugin.manifest.supports(PlatformCapability.COMMENT):
+        raise HTTPException(status_code=422, detail="平台暂不支持评论生成")
+
+    runtime = getattr(request.app.state, "agent_runtime", None)
+    if runtime is None or not runtime.ready or runtime.models is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AI 回复生成服务未就绪；请确认请求由带模型配置的 worker 处理",
+        )
+
+    agent = _agent_store(request).get_agent(payload.agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    if agent["platform_id"] != normalized_platform:
+        raise HTTPException(status_code=422, detail="Agent 与目标平台不匹配")
+    if agent["status"] == "archived":
+        raise HTTPException(status_code=422, detail="已归档 Agent 不能生成回复")
+
+    config = AgentConfig.model_validate(agent["config"])
+    candidate = payload.model_dump(exclude={"agent_id", "manual_context"})
+    try:
+        generated = runtime.models.generate_reply(
+            config,
+            candidate,
+            manual_context=payload.manual_context,
+            platform_id=normalized_platform,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "platform_id": normalized_platform,
+        "agent_id": payload.agent_id,
+        "object_id": generated.object_id,
+        "safe": generated.safe,
+        "score": generated.score,
+        "reply": generated.reply,
+        "rationale": generated.rationale,
+        "safety_reason": generated.safety_reason,
+        "reply_type": generated.reply_type,
+        "follow_up_content_idea": generated.follow_up_content_idea,
+        "target_url": payload.url,
+        # The platform-specific connector can later replace this with a native
+        # composer URL; returning the target now keeps manual review useful.
+        "reply_url": payload.url,
+    }
 
 
 def _short_name(platform_id: str, metadata: dict[str, Any] | None = None) -> str:
@@ -427,6 +540,295 @@ def platform_center(request: Request) -> HTMLResponse:
         name="platform_center.html",
         context=_platform_center_context(request),
     )
+
+
+def _split_values(value: Any) -> list[str]:
+    return list(
+        dict.fromkeys(
+            item.strip()
+            for item in str(value or "").replace(",", "\n").splitlines()
+            if item.strip()
+        )
+    )
+
+
+def _agent_config_form(current: dict[str, Any], form: Any) -> dict[str, Any]:
+    output = dict(current)
+    strings = {
+        "role", "audience", "tone", "primary_language", "system_prompt", "model",
+        "reasoning_effort", "active_start", "active_end", "timezone",
+    }
+    lists = {
+        "expertise", "keywords", "priority_accounts", "excluded_accounts",
+        "approved_domains", "original_post_times",
+    }
+    integers = {
+        "max_output_tokens", "request_timeout_seconds", "model_retries",
+        "scan_interval_minutes", "candidates_per_scan", "replies_per_scan",
+        "post_freshness_hours", "reply_hourly_limit", "reply_daily_limit",
+        "original_posts_daily", "author_cooldown_days", "conversation_turn_limit",
+        "failure_pause_threshold", "reply_delay_min_minutes", "reply_delay_max_minutes",
+    }
+    floats = {"temperature", "score_threshold"}
+    for key in strings:
+        if key in form:
+            output[key] = str(form.get(key) or "").strip()
+    for key in lists:
+        if key in form:
+            output[key] = _split_values(form.get(key))
+    for key in integers:
+        if key in form:
+            output[key] = int(str(form.get(key) or "0"))
+    for key in floats:
+        if key in form:
+            output[key] = float(str(form.get(key) or "0"))
+    if "inherit_global_operations_present" in form:
+        output["inherit_global_operations"] = str(
+            form.get("inherit_global_operations") or ""
+        ).lower() in {"1", "true", "on"}
+    return output
+
+
+@app.get("/agents", response_class=HTMLResponse)
+def agent_center(request: Request, archived: bool = False) -> HTMLResponse:
+    store = _agent_store(request)
+    connections = _automation(request).list_platform_connections(enabled_only=True)
+    bound = {
+        int(agent[key])
+        for agent in store.list_agents(include_archived=True)
+        for key in ("reply_connection_id", "publish_connection_id")
+    }
+    reply_connections = [
+        row for row in connections
+        if int(row["id"]) not in bound and "comment" in row.get("capabilities", ())
+    ]
+    publish_connections = [
+        row for row in connections
+        if int(row["id"]) not in bound and "owned_publish" in row.get("capabilities", ())
+    ]
+    runtime = getattr(request.app.state, "agent_runtime", None)
+    runtime_status = store.latest_runtime_status() or {}
+    return templates.TemplateResponse(
+        request=request,
+        name="agents.html",
+        context={
+            "agents": store.list_agents(include_archived=archived),
+            "reply_connections": reply_connections,
+            "publish_connections": publish_connections,
+            "defaults": store.get_defaults(),
+            "show_archived": archived,
+            "runtime_ready": bool(
+                (runtime and runtime.ready) or runtime_status.get("model_ready")
+            ),
+            "runtime_status": runtime_status,
+            "worker": _worker_status(_automation(request)),
+        },
+    )
+
+
+@app.post("/agents")
+async def create_agent(request: Request) -> RedirectResponse:
+    form = await request.form()
+    defaults = _agent_store(request).get_defaults()
+    config = _agent_config_form(defaults, form)
+    try:
+        agent_id = _agent_store(request).create_agent(
+            name=str(form.get("name") or "").strip(),
+            platform_id=str(form.get("platform_id") or "x"),
+            native_account_id=str(form.get("native_account_id") or "").strip(),
+            native_username=str(form.get("native_username") or "").strip(),
+            reply_connection_id=int(str(form.get("reply_connection_id") or "0")),
+            publish_connection_id=int(str(form.get("publish_connection_id") or "0")),
+            config=config,
+            actor=_actor(request),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/agents/{agent_id}?tab=config", status_code=303)
+
+
+@app.post("/agents/defaults")
+async def update_agent_defaults(request: Request) -> RedirectResponse:
+    store = _agent_store(request)
+    form = await request.form()
+    try:
+        store.save_defaults(_agent_config_form(store.get_defaults(), form))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url="/agents#agent-defaults", status_code=303)
+
+
+@app.get("/agents/{agent_id}", response_class=HTMLResponse)
+def agent_detail(
+    request: Request,
+    agent_id: int,
+    tab: str = "activity",
+) -> HTMLResponse:
+    store = _agent_store(request)
+    agent = store.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    if tab not in {"activity", "status", "config"}:
+        tab = "activity"
+    config = agent["config"]
+    now = datetime.now(timezone.utc)
+    day_start = now.astimezone(ZoneInfo(str(config["timezone"]))).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc).isoformat()
+    hour_start = (now - timedelta(hours=1)).isoformat()
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        counts_future = executor.submit(
+            store.usage_counts,
+            agent_id,
+            day_start=day_start,
+            hour_start=hour_start,
+        )
+        timeline_future = (
+            executor.submit(store.timeline, agent_id, limit=30)
+            if tab == "activity"
+            else None
+        )
+        events_future = (
+            executor.submit(store.recent_events, agent_id, limit=30)
+            if tab == "status"
+            else None
+        )
+        performance_future = executor.submit(store.metric_summary, agent_id)
+        runtime_future = executor.submit(store.latest_runtime_status)
+        worker_future = executor.submit(_worker_status, _automation(request))
+        counts = counts_future.result()
+        activity = timeline_future.result() if timeline_future else []
+        events = events_future.result() if events_future else []
+        performance = performance_future.result()
+        runtime_status = runtime_future.result() or {}
+        worker = worker_future.result()
+    replies_today = counts["replies_today"]
+    replies_hour = counts["replies_hour"]
+    posts_today = counts["posts_today"]
+    runtime = getattr(request.app.state, "agent_runtime", None)
+    return templates.TemplateResponse(
+        request=request,
+        name="agent_detail.html",
+        context={
+            "agent": agent,
+            "config": config,
+            "tab": tab,
+            "activity": activity,
+            "events": events,
+            "has_more": len(activity) == 30,
+            "usage": {
+                "replies_today": replies_today,
+                "reply_daily_remaining": max(0, int(config["reply_daily_limit"]) - replies_today),
+                "reply_hour_remaining": max(0, int(config["reply_hourly_limit"]) - replies_hour),
+                "posts_today": posts_today,
+                "post_remaining": max(0, int(config["original_posts_daily"]) - posts_today),
+            },
+            "performance": performance,
+            "worker": worker,
+            "runtime_ready": bool(
+                (runtime and runtime.ready) or runtime_status.get("model_ready")
+            ),
+            "runtime_status": runtime_status,
+        },
+    )
+
+
+@app.get("/agents/{agent_id}/activity", response_class=HTMLResponse)
+def agent_activity_fragment(
+    request: Request,
+    agent_id: int,
+    before_created_at: str | None = None,
+    before_id: int | None = None,
+) -> HTMLResponse:
+    if not _agent_store(request).get_agent(agent_id):
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    activity = _agent_store(request).timeline(
+        agent_id,
+        before_created_at=before_created_at,
+        before_id=before_id,
+        limit=30,
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="agent_activity_fragment.html",
+        context={"agent_id": agent_id, "activity": activity, "has_more": len(activity) == 30},
+    )
+
+
+@app.post("/agents/{agent_id}/status")
+async def update_agent_status(request: Request, agent_id: int) -> RedirectResponse:
+    form = await request.form()
+    requested = str(form.get("status") or "")
+    mapping = {
+        "enable": "running",
+        "pause": "paused",
+        "archive": "archived",
+        "restore": "paused",
+    }
+    if requested not in mapping:
+        raise HTTPException(status_code=422, detail="未知 Agent 状态操作")
+    if requested == "enable":
+        store = _agent_store(request)
+        agent = store.get_agent(agent_id)
+        runtime_status = store.latest_runtime_status() or {}
+        worker = _worker_status(_automation(request))
+        blockers: list[str] = []
+        if not worker["online"]:
+            blockers.append("Mac Worker 离线")
+        if not runtime_status.get("model_ready"):
+            blockers.append("Mac 模型配置不可用")
+        if not runtime_status.get("write_ready"):
+            blockers.append("Mac Worker 未启用真实写入")
+        if agent and agent.get("reply_connection_status") != "connected":
+            blockers.append("OpenCLI 回复连接不可用")
+        if agent and agent.get("publish_connection_status") != "connected":
+            blockers.append("Postiz 发帖连接不可用")
+        if agent and agent["config"]["model"] not in runtime_status.get("allowed_models", ()):
+            blockers.append("Agent 模型不在 Mac 允许列表中")
+        if blockers:
+            raise HTTPException(status_code=422, detail="；".join(blockers))
+    try:
+        _agent_store(request).set_status(
+            agent_id,
+            mapping[requested],  # type: ignore[arg-type]
+            actor=_actor(request),
+            reason=str(form.get("reason") or "").strip(),
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/agents/{agent_id}", status_code=303)
+
+
+@app.post("/agents/{agent_id}/commands/{command_type}")
+def queue_agent_command(
+    request: Request,
+    agent_id: int,
+    command_type: str,
+) -> RedirectResponse:
+    try:
+        _agent_store(request).queue_command(agent_id, command_type, actor=_actor(request))
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    request.app.state.platform_worker.notify()
+    return RedirectResponse(url=f"/agents/{agent_id}?tab=status", status_code=303)
+
+
+@app.post("/agents/{agent_id}/config")
+async def update_agent_config(request: Request, agent_id: int) -> RedirectResponse:
+    store = _agent_store(request)
+    agent = store.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    form = await request.form()
+    try:
+        store.save_config(
+            agent_id,
+            _agent_config_form(agent["config"], form),
+            actor=_actor(request),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return RedirectResponse(url=f"/agents/{agent_id}?tab=config", status_code=303)
 
 
 

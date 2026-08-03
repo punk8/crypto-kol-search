@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.name }} · Agent{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="/static/agents.css">
+{% endblock %}
+{% block content %}
+{% set status_labels = {"draft":"待启用", "running":"运行中", "paused":"已暂停", "auto_paused":"自动暂停", "archived":"已归档"} %}
+<div class="agent-page agent-detail-page">
+  <nav class="agent-breadcrumb"><a href="/agents">Agent</a><span>/</span><span>{{ agent.name }}</span></nav>
+  <section class="agent-detail-head">
+    <span class="agent-avatar agent-avatar--large">X</span>
+    <div><h1>{{ agent.name }}</h1><p>@{{ agent.native_username }} · {{ agent.platform_id|upper }}</p><span class="agent-status agent-status--{{ agent.status }}">● {{ status_labels.get(agent.status, agent.status) }}</span></div>
+    <div class="agent-head-actions">
+      {% if agent.status == 'running' %}<form method="post" action="/agents/{{ agent.id }}/status"><input type="hidden" name="status" value="pause"><button class="button danger" type="submit">暂停 Agent</button></form>
+      {% elif agent.status == 'archived' %}<form method="post" action="/agents/{{ agent.id }}/status"><input type="hidden" name="status" value="restore"><button class="button" type="submit">恢复为暂停</button></form>
+      {% else %}<form method="post" action="/agents/{{ agent.id }}/status" onsubmit="return confirm('启用后会直接扫描并执行真实 X 发布，确认继续？')"><input type="hidden" name="status" value="enable"><button class="button" type="submit">启用自动运行</button></form>{% endif %}
+    </div>
+  </section>
+
+  {% if agent.pause_reason %}<div class="notice warning"><span>{{ agent.pause_reason }}</span></div>{% endif %}
+  <nav class="agent-tabs"><a class="{{ 'active' if tab == 'activity' }}" href="/agents/{{ agent.id }}?tab=activity">动态</a><a class="{{ 'active' if tab == 'status' }}" href="/agents/{{ agent.id }}?tab=status">运行状态</a><a class="{{ 'active' if tab == 'config' }}" href="/agents/{{ agent.id }}?tab=config">配置</a></nav>
+
+  {% if tab == 'activity' %}
+  <div class="agent-detail-grid">
+    <section class="agent-timeline-panel"><div class="agent-panel-title"><div><p class="eyebrow">AGENT ACTIVITY</p><h2>Agent 动态</h2></div><span>每 15 秒刷新</span></div><div class="agent-timeline" id="agent-activity" {% if agent.status == 'running' %}hx-get="/agents/{{ agent.id }}/activity" hx-trigger="every 15s" hx-target="#agent-activity" hx-swap="innerHTML"{% endif %}>{% include "agent_activity_fragment.html" %}</div></section>
+    <aside class="agent-sidebar">
+      <article><span>下一次扫描</span><strong>{{ agent.next_scan_at|local_datetime(config.timezone) if agent.next_scan_at else '等待启用' }}</strong></article>
+      <article><span>今日剩余回复</span><strong>{{ usage.reply_daily_remaining }} <small>/ {{ config.reply_daily_limit }}</small></strong></article>
+      <article><span>今日原创帖</span><strong>{{ usage.posts_today }} <small>/ {{ config.original_posts_daily }}</small></strong></article>
+      <article><span>账号连接</span><p>Postiz <b class="{{ agent.publish_connection_status }}">{{ agent.publish_connection_status }}</b></p><p>OpenCLI <b class="{{ agent.reply_connection_status }}">{{ agent.reply_connection_status }}</b></p></article>
+      <article><span>模型配置</span><strong>{{ config.model }}</strong><small>{{ '已连接' if runtime_ready else '等待 Mac Worker 配置' }}</small></article>
+      <article><span>高质量回复</span><strong>{{ performance.high_quality_replies }}</strong><small>已完成 72 小时回收</small></article>
+      <article><span>累计互动</span><strong>{{ performance.likes + performance.replies + performance.reposts + performance.quotes }}</strong><small>点赞、回复、转发与引用</small></article>
+      <article><span>关注变化</span><strong>{{ '+' if performance.follower_change > 0 else '' }}{{ performance.follower_change }}</strong><small>从首个本地快照起</small></article>
+      <article><span>Telegram 通知</span><strong>{% if not worker.online %}Worker 离线{% elif runtime_status.telegram_ready %}已配置{% else %}未配置（不阻塞运行）{% endif %}</strong></article>
+    </aside>
+  </div>
+  {% elif tab == 'status' %}
+  <div class="agent-status-grid">
+    <section class="agent-panel"><div class="agent-panel-title"><div><p class="eyebrow">LIVE STATUS</p><h2>运行状态</h2></div></div><div class="agent-stat-cards"><article><span>本小时剩余回复</span><strong>{{ usage.reply_hour_remaining }}</strong></article><article><span>今日剩余回复</span><strong>{{ usage.reply_daily_remaining }}</strong></article><article><span>今日剩余原创</span><strong>{{ usage.post_remaining }}</strong></article><article><span>连续失败</span><strong>{{ agent.consecutive_failures }}</strong></article></div><div class="agent-command-bar"><form method="post" action="/agents/{{ agent.id }}/commands/scan_now" onsubmit="return confirm('立即执行一次真实扫描？')"><button class="button" {% if agent.status != 'running' %}disabled{% endif %}>立即扫描</button></form><form method="post" action="/agents/{{ agent.id }}/commands/post_now" onsubmit="return confirm('这会生成并真实发布一条 X 原创帖，确认继续？')"><button class="button ghost" {% if agent.status != 'running' %}disabled{% endif %}>立即生成原创帖</button></form></div></section>
+    <section class="agent-panel"><div class="agent-panel-title"><div><p class="eyebrow">EVENT LOG</p><h2>运行事件</h2></div></div><div class="agent-event-list">{% for item in events %}<article class="{{ item.severity }}"><span>{{ item.created_at|local_datetime(config.timezone) }}</span><strong>{{ item.title or item.event_type }}</strong><p>{{ item.message }}</p></article>{% else %}<div class="agent-empty agent-empty--compact">暂无运行事件</div>{% endfor %}</div></section>
+  </div>
+  {% else %}
+  <section class="agent-panel agent-config-panel"><div class="agent-panel-title"><div><p class="eyebrow">VERSIONED CONFIGURATION</p><h2>Agent 配置 · v{{ config.version }}</h2></div><span>{{ '请先暂停再修改' if agent.status == 'running' else '保存会创建新版本' }}</span></div>
+    <form method="post" action="/agents/{{ agent.id }}/config" class="agent-form-grid">
+      <h3 class="agent-form-wide">人设与目标</h3>
+      <label>职责<input name="role" value="{{ config.role }}"></label><label>主语言<input name="primary_language" value="{{ config.primary_language }}"></label>
+      <label class="agent-form-wide">目标受众<input name="audience" value="{{ config.audience }}"></label>
+      <label class="agent-form-wide">专业领域<textarea name="expertise">{{ config.expertise|join('\n') }}</textarea></label>
+      <label class="agent-form-wide">语气<input name="tone" value="{{ config.tone }}"></label>
+      <label class="agent-form-wide">高级 Prompt<textarea name="system_prompt" rows="5">{{ config.system_prompt }}</textarea><small>不能覆盖系统安全规则。</small></label>
+      <h3 class="agent-form-wide">目标范围</h3>
+      <label class="agent-form-wide">关键词<textarea name="keywords">{{ config.keywords|join('\n') }}</textarea></label>
+      <label>重点账号<textarea name="priority_accounts">{{ config.priority_accounts|join('\n') }}</textarea></label><label>排除账号<textarea name="excluded_accounts">{{ config.excluded_accounts|join('\n') }}</textarea></label>
+      <label class="agent-form-wide">批准域名<textarea name="approved_domains">{{ config.approved_domains|join('\n') }}</textarea></label>
+      <h3 class="agent-form-wide">模型</h3>
+      <label>模型名称{% if runtime_status.allowed_models %}<select name="model">{% for model in runtime_status.allowed_models %}<option value="{{ model }}" {% if model == config.model %}selected{% endif %}>{{ model }}</option>{% endfor %}</select>{% else %}<input name="model" value="{{ config.model }}">{% endif %}</label><label>Temperature<input type="number" step="0.1" name="temperature" value="{{ config.temperature }}"></label>
+      <label>最大输出 tokens<input type="number" name="max_output_tokens" value="{{ config.max_output_tokens }}"></label><label>推理强度<input name="reasoning_effort" value="{{ config.reasoning_effort }}"></label>
+      <label>请求超时（秒）<input type="number" name="request_timeout_seconds" value="{{ config.request_timeout_seconds }}"></label><label>模型重试次数<input type="number" name="model_retries" value="{{ config.model_retries }}"></label>
+      <h3 class="agent-form-wide">扫描与配额</h3>
+      <label class="agent-form-wide agent-inherit-check"><input type="hidden" name="inherit_global_operations_present" value="1"><input type="checkbox" name="inherit_global_operations" value="true" {% if config.inherit_global_operations %}checked{% endif %}>继承全局运行默认；取消后使用下面的 Agent 独立值</label>
+      {% for key, label in [('scan_interval_minutes','扫描间隔（分钟）'),('candidates_per_scan','每轮候选'),('replies_per_scan','每轮回复'),('post_freshness_hours','帖子时效（小时）'),('reply_hourly_limit','每小时回复'),('reply_daily_limit','每日回复'),('original_posts_daily','每日原创'),('author_cooldown_days','作者冷却（天）'),('conversation_turn_limit','自动对话轮数'),('failure_pause_threshold','失败暂停阈值'),('score_threshold','最低评分'),('reply_delay_min_minutes','最短回复延迟'),('reply_delay_max_minutes','最长回复延迟')] %}<label>{{ label }}<input type="number" name="{{ key }}" value="{{ config[key] }}"></label>{% endfor %}
+      <label>运行开始<input type="time" name="active_start" value="{{ config.active_start }}"></label><label>运行结束<input type="time" name="active_end" value="{{ config.active_end }}"></label>
+      <label>时区<input name="timezone" value="{{ config.timezone }}"></label><label>原创发布时间<textarea name="original_post_times">{{ config.original_post_times|join('\n') }}</textarea></label>
+      <div class="agent-form-actions agent-form-wide"><button class="button" type="submit" {% if agent.status == 'running' %}disabled{% endif %}>保存为新配置版本</button></div>
+    </form>
+    <div class="agent-danger-zone"><strong>生命周期</strong><p>归档后停止调度但保留全部历史记录。</p>{% if agent.status != 'archived' %}<form method="post" action="/agents/{{ agent.id }}/status" onsubmit="return confirm('确认归档这个 Agent？')"><input type="hidden" name="status" value="archive"><button class="button danger" type="submit">归档 Agent</button></form>{% endif %}</div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

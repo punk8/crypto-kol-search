@@ -47,7 +47,10 @@ def create_x_read_provider(
                 "Official backend requires X_BEARER_TOKEN.",
                 hint="Copy .env.example → .env and follow README.md",
             )
-        primary = OfficialTwitterClient(bearer_token=token)
+        primary = OfficialTwitterClient(
+            bearer_token=token,
+            trend_woeid=settings.x_trend_woeid,
+        )
         if settings.twitter_fallback_backend == "opencli":
             from kol_search.twitter.failover import FailoverTwitterClient
 

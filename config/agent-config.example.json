@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "model": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "replace-on-the-mac-only",
+    "allowed_models": [
+      {
+        "id": "gpt-5.6-luna",
+        "label": "Primary Agent model"
+      }
+    ]
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "replace-on-the-mac-only",
+    "chat_id": "replace-on-the-mac-only",
+    "daily_summary_time": "23:10",
+    "timezone": "Asia/Shanghai",
+    "timeout_seconds": 10
+  },
+  "hard_limits": {
+    "minimum_scan_interval_minutes": 10,
+    "maximum_candidates_per_scan": 100,
+    "maximum_replies_per_scan": 3,
+    "maximum_replies_hourly": 3,
+    "maximum_replies_daily": 24,
+    "maximum_original_posts_daily": 4
+  }
+}

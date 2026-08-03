@@ -8,7 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
-from kol_search.automation import AutomationStore
+from kol_search.automation import AgentStore, AutomationStore
+from kol_search.agent_runtime import CandidateReply
 from kol_search.cli import app as cli_app
 from kol_search.platforms import PlatformManifest
 from kol_search.web import _platform_workspace_template, app as web_app
@@ -121,6 +122,85 @@ def test_platform_center_and_independent_workspaces_gate_capability_controls(
         assert "无需人工维护" not in managed_workspace.text
         assert 'action="/platforms/x/seeds"' not in managed_workspace.text
         assert 'action="/platforms/x/kols/auto-managed/status"' not in managed_workspace.text
+
+
+def test_reply_draft_api_uses_migrated_model_path_without_executing_write(
+    isolated_platform_environment: Path,
+) -> None:
+    with TestClient(web_app) as client:
+        automation = web_app.state.automation
+        store = AgentStore(automation)
+        reply_connection = automation.upsert_platform_connection(
+            "x",
+            connection_key="draft-reply",
+            display_name="@agent reply",
+            status="connected",
+            capabilities=["comment"],
+            metadata={
+                "kind": "managed_account",
+                "username": "agent",
+                "external_account_id": "42",
+                "browser_profile": "agent-test",
+            },
+        )
+        publish_connection = automation.upsert_platform_connection(
+            "x",
+            connection_key="draft-publish",
+            display_name="@agent publish",
+            status="connected",
+            capabilities=["owned_publish"],
+            metadata={
+                "kind": "postiz",
+                "username": "agent",
+                "external_account_id": "42",
+                "integration_id": "postiz-42",
+            },
+        )
+        agent_id = store.create_agent(
+            name="Reply Draft Agent",
+            platform_id="x",
+            native_account_id="42",
+            native_username="agent",
+            reply_connection_id=reply_connection,
+            publish_connection_id=publish_connection,
+            config={**store.get_defaults(), "model": "test-model"},
+            actor="tester",
+        )
+
+        class Models:
+            def generate_reply(self, config, candidate, **kwargs):  # noqa: ANN001, ANN003
+                assert candidate["object_id"] == "tweet-1"
+                assert kwargs["platform_id"] == "x"
+                return CandidateReply(
+                    object_id="tweet-1",
+                    score=93,
+                    reply="A concrete systems insight.",
+                    rationale="Adds useful context.",
+                    reply_type="add evidence",
+                )
+
+        web_app.state.agent_runtime = type(
+            "Runtime",
+            (),
+            {"ready": True, "models": Models()},
+        )()
+        response = client.post(
+            "/api/v1/platforms/x/reply-draft",
+            json={
+                "agent_id": agent_id,
+                "object_id": "tweet-1",
+                "author_username": "builder",
+                "text": "RWA settlement needs better liquidity primitives.",
+                "url": "https://x.com/builder/status/tweet-1",
+                "manual_context": "Prefer a concise research tone.",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["reply"] == "A concrete systems insight."
+        assert response.json()["reply_type"] == "add evidence"
+        assert response.json()["reply_url"].endswith("tweet-1")
+        assert automation.list_actions(limit=20) == []
 
 
 def test_workspace_template_falls_back_for_future_platforms() -> None:
@@ -423,6 +503,8 @@ def test_admin_settings_register_multiple_core_connections_without_legacy_schema
                 "connection_kind": "postiz",
                 "display_name": "Publisher One",
                 "integration_id": "postiz-1",
+                "external_account_id": "publisher-1",
+                "username": "publisher_one",
                 "is_default": "true",
             },
             follow_redirects=False,
@@ -433,6 +515,8 @@ def test_admin_settings_register_multiple_core_connections_without_legacy_schema
                 "connection_kind": "postiz",
                 "display_name": "Publisher Two",
                 "integration_id": "postiz-2",
+                "external_account_id": "publisher-2",
+                "username": "publisher_two",
             },
             follow_redirects=False,
         )

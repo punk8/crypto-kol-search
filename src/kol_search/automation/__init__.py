@@ -1,5 +1,6 @@
 """Shared automation persistence and deterministic policy primitives."""
 
+from .agents import AgentConfig, AgentStore, RuntimeAgentConfig
 from .database import AutomationDatabase
 from .models import (
     ActionKind,
@@ -25,6 +26,8 @@ __all__ = [
     "ActionKind",
     "ActionStatus",
     "ActionType",
+    "AgentConfig",
+    "AgentStore",
     "AutomationDatabase",
     "AutomationPolicy",
     "AutomationStore",
@@ -39,5 +42,6 @@ __all__ = [
     "PolicyLimits",
     "PolicyOutcome",
     "RecordNotFoundError",
+    "RuntimeAgentConfig",
     "StateTransitionError",
 ]

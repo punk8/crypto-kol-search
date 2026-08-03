@@ -11,7 +11,7 @@ from kol_search.twitter.base import TwitterBackendError
 from kol_search.twitter.failover import FailoverTwitterClient
 from kol_search.twitter.factory import create_x_read_provider
 from kol_search.twitter.mock import MockTwitterClient
-from kol_search.twitter.official import _parse_account, _parse_post
+from kol_search.twitter.official import API_BASE, OfficialTwitterClient, _parse_account, _parse_post
 from kol_search.twitter.opencli import OpenCliTwitterClient
 from kol_search.twitter.third_party import ThirdPartyTwitterClient
 from kol_search.twitter.twitterapi_io import TwitterApiIoClient
@@ -30,6 +30,7 @@ def test_official_parser_preserves_entities_and_metrics():
         "public_metrics": {"followers_count": 123, "following_count": 4, "tweet_count": 5, "listed_count": 6},
     })
     assert account.followers_count == 123
+    assert account.source_provider == "official"
     assert account.listed_count == 6
     assert account.entities["url"]["urls"][0]["expanded_url"] == "https://example.org"
 
@@ -58,6 +59,61 @@ def test_official_parser_preserves_entities_and_metrics():
     assert post.reference_type == "replied_to"
     assert post.view_count == 100
     assert post.bookmark_count == 4
+    assert post.source_provider == "official"
+
+
+def test_official_client_reads_trends_and_applies_incremental_time_filters():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/2/trends/by/woeid/23424977":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"trend_name": "#AI", "tweet_count": 250000},
+                        {"trend_name": "Bitcoin", "tweet_count": 180000},
+                    ]
+                },
+            )
+        if request.url.path == "/2/tweets/search/recent":
+            return httpx.Response(200, json={"data": []})
+        if request.url.path == "/2/users/123/tweets":
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404, json={"detail": "unexpected path"})
+
+    client = OfficialTwitterClient("test-token", trend_woeid=23424977)
+    client._client.close()
+    client._client = httpx.Client(  # noqa: SLF001
+        base_url=API_BASE,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        trends = client.get_trends(2)
+        client.search_tweets(
+            "#AI",
+            max_results=10,
+            start_time="2026-07-22T10:00:00Z",
+        )
+        client.get_user_tweets(
+            "123",
+            max_results=5,
+            username="alice",
+            start_time="2026-07-22T11:00:00Z",
+        )
+    finally:
+        client.close()
+
+    assert client.capabilities.trends is True
+    assert [(trend.name, trend.rank, trend.post_count) for trend in trends] == [
+        ("#AI", 1, 250000),
+        ("Bitcoin", 2, 180000),
+    ]
+    assert trends[0].raw["source_provider"] == "official"
+    assert requests[0].url.params["max_trends"] == "2"
+    assert requests[1].url.params["start_time"] == "2026-07-22T10:00:00Z"
+    assert requests[2].url.params["start_time"] == "2026-07-22T11:00:00Z"
 
 
 def test_third_party_user_search_is_explicit_capability():

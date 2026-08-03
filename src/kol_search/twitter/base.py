@@ -50,6 +50,7 @@ class XReadProvider(Protocol):
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         """Search recent posts matching query."""
         ...
@@ -67,6 +68,7 @@ class XReadProvider(Protocol):
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         ...
 

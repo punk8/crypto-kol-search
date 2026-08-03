@@ -102,6 +102,7 @@ class MockTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         # Simple token match: split on OR/AND/quotes-ish
         tokens = [t for t in re.split(r"\s+OR\s+|\s+AND\s+|\s+", query, flags=re.I) if t]
@@ -159,6 +160,7 @@ class MockTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         posts = [p for p in self._posts if p.author_id == str(user_id)]
         posts.sort(key=lambda p: p.created_at or "", reverse=True)

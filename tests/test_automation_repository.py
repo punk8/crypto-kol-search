@@ -36,6 +36,7 @@ def test_explicit_migrations_are_idempotent_and_coexist_with_legacy_tables(tmp_p
         5,
         6,
         7,
+        8,
     ]
     with database.connection() as connection:
         tables = {

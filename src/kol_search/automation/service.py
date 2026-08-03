@@ -654,7 +654,10 @@ class PlatformAutomationService:
                 receipt_url=result.receipt_url,
                 receipt=receipt,
                 error=result.error,
-                pause_connection=not result.success or not result.confirmed,
+                pause_connection=(
+                    not action.get("agent_id")
+                    and (not result.success or not result.confirmed)
+                ),
                 pause_reason=result.error or "unconfirmed platform write",
             )
         except Exception as exc:
@@ -663,7 +666,7 @@ class PlatformAutomationService:
                 success=False,
                 confirmed=False,
                 error=str(exc),
-                pause_connection=True,
+                pause_connection=not bool(action.get("agent_id")),
                 pause_reason=str(exc),
             )
         return True
@@ -1472,13 +1475,26 @@ class PlatformAutomationScheduler:
         service: PlatformAutomationService,
         worker: AutomationWorker,
         settings: Settings,
+        agent_runtime: Any | None = None,
     ) -> None:
         self.service = service
         self.worker = worker
         self.settings = settings
+        self.agent_runtime = agent_runtime
         self.scheduler = BackgroundScheduler(timezone=settings.timezone)
 
     def start(self) -> None:
+        if self.agent_runtime is not None:
+            self.scheduler.add_job(
+                self.agent_runtime.tick,
+                "interval",
+                minutes=1,
+                id="agent-runtime-tick",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
+            self.agent_runtime.notify_worker("已启动")
         for manifest in self.service.registry.list_manifests():
             platform_id = manifest.platform_id
             if self.service.registry.has_handler(platform_id, PlatformTaskName.DISCOVER):
@@ -1546,6 +1562,8 @@ class PlatformAutomationScheduler:
             self.scheduler.start()
 
     def stop(self) -> None:
+        if self.agent_runtime is not None:
+            self.agent_runtime.notify_worker("已停止")
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
 

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import quote_plus
 
 import httpx
 
-from kol_search.twitter.models import XAccount, XReadCapabilities, XTweet
+from kol_search.twitter.models import XAccount, XReadCapabilities, XTrend, XTweet
 from kol_search.twitter.base import TwitterBackendError
 
 API_BASE = "https://api.x.com/2"
@@ -29,6 +30,7 @@ def _parse_account(data: dict[str, Any]) -> XAccount:
     metrics = data.get("public_metrics") or {}
     return XAccount(
         id=str(data["id"]),
+        source_provider="official",
         username=data.get("username", ""),
         name=data.get("name"),
         description=data.get("description"),
@@ -69,6 +71,7 @@ def _parse_post(data: dict[str, Any], users_by_id: dict[str, XAccount] | None = 
     post_id = str(data["id"])
     return XTweet(
         id=post_id,
+        source_provider="official",
         author_id=author_id,
         author_username=author_username,
         text=data.get("text", ""),
@@ -96,9 +99,14 @@ class OfficialTwitterClient:
     """X API v2 with Bearer token (app-only)."""
 
     name = "official"
-    capabilities = XReadCapabilities(user_search=True)
+    capabilities = XReadCapabilities(user_search=True, trends=True)
 
-    def __init__(self, bearer_token: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        bearer_token: str,
+        timeout: float = 30.0,
+        trend_woeid: int = 1,
+    ) -> None:
         if not bearer_token:
             raise TwitterBackendError(
                 "X_BEARER_TOKEN is empty.",
@@ -112,6 +120,7 @@ class OfficialTwitterClient:
             },
             timeout=timeout,
         )
+        self._trend_woeid = max(1, int(trend_woeid))
 
     def close(self) -> None:
         self._client.close()
@@ -158,6 +167,7 @@ class OfficialTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         # API allows 10–100
         n = max(10, min(100, max_results))
@@ -170,6 +180,8 @@ class OfficialTwitterClient:
         }
         if since_id:
             params["since_id"] = since_id
+        if start_time:
+            params["start_time"] = start_time
         data = self._request("GET", "/tweets/search/recent", params=params)
         users_by_id: dict[str, XAccount] = {}
         for u in (data.get("includes") or {}).get("users") or []:
@@ -237,16 +249,20 @@ class OfficialTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         n = max(5, min(100, max_results))
+        params: dict[str, Any] = {
+            "max_results": n,
+            "tweet.fields": _tweet_fields(),
+            "exclude": "retweets" if include_replies else "retweets,replies",
+        }
+        if start_time:
+            params["start_time"] = start_time
         data = self._request(
             "GET",
             f"/users/{user_id}/tweets",
-            params={
-                "max_results": n,
-                "tweet.fields": _tweet_fields(),
-                "exclude": "retweets" if include_replies else "retweets,replies",
-            },
+            params=params,
         )
         posts = [_parse_post(t) for t in data.get("data") or []]
         # Timeline responses omit author expansions; fill known identity locally.
@@ -258,6 +274,32 @@ class OfficialTwitterClient:
             if p.author_username and not p.url:
                 p.url = f"https://x.com/{p.author_username}/status/{p.id}"
         return posts[:max_results]
+
+    def get_trends(self, max_results: int = 20) -> list[XTrend]:
+        n = max(1, min(50, max_results))
+        payload = self._request(
+            "GET",
+            f"/trends/by/woeid/{self._trend_woeid}",
+            params={
+                "max_trends": n,
+                "trend.fields": "trend_name,tweet_count",
+            },
+        )
+        output: list[XTrend] = []
+        for rank, item in enumerate(payload.get("data") or [], 1):
+            name = str(item.get("trend_name") or "").strip()
+            if not name:
+                continue
+            output.append(
+                XTrend(
+                    name=name,
+                    rank=rank,
+                    post_count=int(item.get("tweet_count") or 0),
+                    url=f"https://x.com/search?q={quote_plus(name)}&src=trend_click",
+                    raw={"source_provider": self.name, "woeid": self._trend_woeid, **item},
+                )
+            )
+        return output[:max_results]
 
 
 # silence unused import if re used later

@@ -8,6 +8,7 @@ from kol_search.automation.service import (
     PlatformAutomationScheduler,
     PlatformAutomationService,
 )
+from kol_search.agent_runtime import AgentRuntimeService
 from kol_search.database_rebuild import rebuild_database
 from kol_search.platforms import build_default_registry, install_registered_platform_schemas
 from kol_search.settings import get_settings
@@ -144,7 +145,10 @@ def run_worker() -> None:
     automation, registry, service, worker = _platform_runtime(
         settings, initialize_health=False
     )
-    scheduler = PlatformAutomationScheduler(service, worker, settings)
+    agent_runtime = AgentRuntimeService(automation, registry, settings)
+    scheduler = PlatformAutomationScheduler(
+        service, worker, settings, agent_runtime
+    )
     stopped = threading.Event()
     try:
         worker.start()

@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     )
     x_trends_per_scan: int = Field(default=5, alias="KOL_X_TRENDS_PER_SCAN")
     x_tweets_per_trend: int = Field(default=10, alias="KOL_X_TWEETS_PER_TREND")
+    x_trend_woeid: int = Field(default=1, alias="KOL_X_TREND_WOEID")
     signal_posts_per_account: int = Field(default=20, alias="KOL_SIGNAL_POSTS_PER_ACCOUNT")
     signal_reply_limit: int = Field(default=20, alias="KOL_SIGNAL_REPLY_LIMIT")
     platform_account_batch_size: int = Field(

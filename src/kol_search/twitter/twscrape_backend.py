@@ -145,12 +145,17 @@ class TwscrapeTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
+        effective_query = query
+        if start_time:
+            effective_query = f"{query} since:{start_time[:10]}"
+
         async def _inner() -> list[XTweet]:
             await self._ensure_ready()
             posts: list[XTweet] = []
             n = 0
-            async for t in self._api.search(query, limit=max_results):
+            async for t in self._api.search(effective_query, limit=max_results):
                 posts.append(_parse_tweet(t))
                 n += 1
                 if n >= max_results:
@@ -200,6 +205,7 @@ class TwscrapeTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         async def _inner() -> list[XTweet]:
             await self._ensure_ready()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,9 @@ from kol_search.platforms.kernel import (
     PlatformTaskResult,
 )
 from kol_search.twitter.base import merge_client_diagnostics
+
+
+_TREND_TWEET_CURSOR_KEY = "__trend_tweets__"
 
 
 class XAccount(BaseModel):
@@ -632,15 +636,18 @@ class _XRuntime:
                 username = str(
                     target.get("handle") or target.get("username") or external_id
                 ).lstrip("@")
+                previous = account_cursors.get(external_id) or account_cursors.get("*")
+                timeline_kwargs: dict[str, object] = {"username": username}
+                if previous and _accepts_keyword(client.get_user_tweets, "start_time"):
+                    timeline_kwargs["start_time"] = previous
                 tweets = [
                     _x_tweet(item)
                     for item in client.get_user_tweets(  # type: ignore[attr-defined]
                         timeline_ids.get(external_id, external_id),
                         limit,
-                        username=username,
+                        **timeline_kwargs,
                     )
                 ]
-                previous = account_cursors.get(external_id) or account_cursors.get("*")
                 items.extend(
                     tweet
                     for tweet in tweets
@@ -697,14 +704,29 @@ class _XRuntime:
                             query = " OR ".join(
                                 trend.name for trend in ordered_trends
                             )
+                            trend_cursor = account_cursors.get(
+                                _TREND_TWEET_CURSOR_KEY
+                            )
+                            search_kwargs: dict[str, object] = {}
+                            if trend_cursor and _accepts_keyword(
+                                search_tweets, "start_time"
+                            ):
+                                search_kwargs["start_time"] = trend_cursor
                             trend_tweets = [
                                 _x_tweet(item)
                                 for item in search_tweets(
                                     query,
                                     min(50, tweets_per_trend * len(ordered_trends)),
+                                    **search_kwargs,
                                 )
                             ]
-                            for tweet in trend_tweets:
+                            fresh_trend_tweets = [
+                                tweet
+                                for tweet in trend_tweets
+                                if not trend_cursor
+                                or _is_after_cursor(tweet.created_at, trend_cursor)
+                            ]
+                            for tweet in fresh_trend_tweets:
                                 searchable_text = tweet.text.casefold().replace("#", "")
                                 matches = [
                                     trend
@@ -722,6 +744,14 @@ class _XRuntime:
                                     )
                                     for trend in matches
                                 )
+                            latest_trend_cursor = _latest_scan_cursor(
+                                trend_cursor,
+                                (tweet.created_at for tweet in trend_tweets),
+                            )
+                            if latest_trend_cursor:
+                                account_cursors[
+                                    _TREND_TWEET_CURSOR_KEY
+                                ] = latest_trend_cursor
                             succeeded += 1
                         except Exception as exc:
                             warnings.append(
@@ -980,7 +1010,9 @@ def _execute_owned_publish(
                 confirmed=False,
                 error="Postiz create response is missing a post id; do not retry automatically",
             )
-        confirmed = mode == "schedule" or bool(receipt_url)
+        # A Postiz schedule id proves provider acceptance, not that X published
+        # the post. Keep it reconcilable until Postiz returns the X release URL.
+        confirmed = bool(receipt_url)
         return ActionExecutionResult(
             success=True,
             external_id=external_id,
@@ -990,7 +1022,7 @@ def _execute_owned_publish(
             error=(
                 None
                 if confirmed
-                else "Postiz accepted the immediate publish but no release URL was returned"
+                else "Postiz accepted the publish but no X release URL was returned"
             ),
         )
     finally:
@@ -1261,6 +1293,20 @@ def _queries(payload: Mapping[str, Any]) -> tuple[str, ...]:
 def _optional_string(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _accepts_keyword(method: Callable[..., object], keyword: str) -> bool:
+    """Keep custom providers compatible while using optional incremental filters."""
+
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == keyword
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 def _decode_scan_cursor(value: str | None) -> dict[str, str]:

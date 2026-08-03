@@ -219,12 +219,18 @@ class OpenCliTwitterClient:
         )
 
     def search_tweets(
-        self, query: str, max_results: int = 40, since_id: str | None = None
+        self,
+        query: str,
+        max_results: int = 40,
+        since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         effective = query
         if since_id:
             # OpenCLI/X search does not support since_id directly; keep the API surface compatible.
             effective = f"{query} since_id:{since_id}"
+        if start_time:
+            effective = f"{effective} since:{start_time[:10]}"
         rows = self._run(
             "search", effective, "--product", "live", "--limit", str(max_results)
         )
@@ -274,6 +280,7 @@ class OpenCliTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         handle = (username or user_id.removeprefix("opencli:")).lstrip("@")
         rows = self._run("tweets", handle, "--limit", str(max_results))

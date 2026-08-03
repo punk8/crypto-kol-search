@@ -1,0 +1,32 @@
+{% set status_labels = {
+  "proposed": "草稿", "needs_review": "待审核", "scheduled": "已排期",
+  "executing": "执行中", "succeeded": "已发布", "confirmation_required": "待确认",
+  "failed": "失败", "cancelled": "已取消"
+} %}
+{% for item in activity %}
+{% set target = item.payload if item.payload.get('target_url') else item.opportunity_payload %}
+<article class="agent-message agent-message--{{ item.status }}" id="action-{{ item.id }}">
+  <div class="agent-message-icon">{{ '↩' if item.action_type == 'comment' else '✎' }}</div>
+  <div class="agent-message-body">
+    <header><span>{{ '公开回复' if item.action_type == 'comment' else '原创帖子' }}</span><i>{% if item.status == 'succeeded' and item.receipt_url %}已发布{% elif item.external_id and item.status in ['succeeded', 'confirmation_required'] %}Postiz 已接收{% else %}{{ status_labels.get(item.status, item.status) }}{% endif %}</i><time>{{ item.created_at|local_datetime }}</time></header>
+    <p class="agent-message-copy">{{ item.final_text or item.draft or '尚无文案' }}</p>
+    {% if item.action_type == 'comment' and (target.get('text') or target.get('target_url')) %}
+    <blockquote><strong>@{{ target.get('target_author_username') or target.get('target_author_id') or '目标作者' }}</strong><p>{{ target.get('text') or '查看目标原帖了解上下文' }}</p>{% if target.get('target_url') %}<a href="{{ target.get('target_url') }}" target="_blank" rel="noreferrer">查看原帖 ↗</a>{% endif %}</blockquote>
+    {% endif %}
+    {% if item.error %}<p class="agent-message-error">{{ item.error }}</p>{% endif %}
+    <footer>
+      {% if item.receipt_url %}<a href="{{ item.receipt_url }}" target="_blank" rel="noreferrer">{{ '在 X 查看回复' if item.action_type == 'comment' else '在 X 查看帖子' }} ↗</a>
+      {% elif item.external_id and item.status in ['succeeded', 'confirmation_required'] %}<span>等待平台发布回执</span>
+      {% elif item.status == 'succeeded' %}<span>动作已完成，平台链接尚未确认</span>
+      {% elif item.status == 'scheduled' %}<span>计划执行：{{ item.scheduled_at or '等待调度' }}</span>
+      {% else %}<span>配置版本 #{{ item.agent_config_version_id or '—' }}</span>{% endif %}
+    </footer>
+  </div>
+</article>
+{% else %}
+<div class="agent-empty agent-empty--compact"><strong>暂无发帖或公开回复</strong><p>启用 Agent 后，真实动作会按时间顺序出现在这里。</p></div>
+{% endfor %}
+{% if has_more and activity %}
+{% set last = activity[-1] %}
+<button class="agent-load-more" hx-get="/agents/{{ agent_id }}/activity?before_created_at={{ last.created_at }}&before_id={{ last.id }}" hx-target="this" hx-swap="outerHTML">↓ 加载更早动态</button>
+{% endif %}

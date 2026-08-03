@@ -286,10 +286,13 @@ class ThirdPartyTwitterClient:
         query: str,
         max_results: int = 40,
         since_id: str | None = None,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         params: dict[str, Any] = {"query": query, "max_results": max_results, "limit": max_results}
         if since_id:
             params["since_id"] = since_id
+        if start_time:
+            params["start_time"] = start_time
         payload = self._get("search/tweets", params=params)
         items = self._extract_list(payload, ("data", "tweets", "results"))
         return [_parse_tweet(t) for t in items][:max_results]
@@ -336,6 +339,7 @@ class ThirdPartyTwitterClient:
         *,
         username: str | None = None,
         include_replies: bool = False,
+        start_time: str | None = None,
     ) -> list[XTweet]:
         payload = self._get(
             f"users/{user_id}/tweets",
@@ -343,6 +347,7 @@ class ThirdPartyTwitterClient:
                 "max_results": max_results,
                 "limit": max_results,
                 "include_replies": str(include_replies).lower(),
+                **({"start_time": start_time} if start_time else {}),
             },
         )
         items = self._extract_list(payload, ("data", "tweets", "results"))
